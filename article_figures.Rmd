@@ -1,0 +1,577 @@
+---
+title: "Article - Figures"
+author: "Ricour Florian"
+date: "June 24 2020"
+output: 
+  github_document:
+    toc : yes
+    #number_sections: yes
+    fig_width : 8
+    fig_height : 6
+    #keep_tex : yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, fig.height=4)
+library(dplyr)
+library(plyr)
+library(plotly)
+library(grid)
+library(gridExtra)
+#library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(chron)
+library(ncdf4)
+library(reshape2)
+#library(ggforce)
+library(gsw)
+library(suncalc)
+library(latex2exp)
+```
+
+## Load a bunch of data previously computed
+
+```{r data, echo=T}
+# FUCK IT FUCK THIS ARTICLE AND FUCK THE BLACK SEA ÇA ME GONFLE
+load(file='dataJune26_2020.RData')
+#load(file='../dataJune26_2020.RData')
+```
+
+
+## Chla correction with Raw + Roesler + FDOM + NPQ
+
+```{r chla_correction_functions, include = F, results=F}
+#1 Extract data from any variable available in the float data files
+ExtractVar <- function(Var,FloatInfo){
+  
+  with(FloatInfo,{
+    # This function should return a dataframe for the chosen variable with value, qc, iprofile and ilevel
+    lvar             <- ncvar_get(ncfile,Var)
+    lvar_qc          <- ncvar_get(ncfile,paste0(Var,"_QC"))
+    lvar_qctab       <- llply(lvar_qc,function(qcstring){
+      as.numeric(unlist(strsplit(qcstring,split="")))
+    })
+    lvar_qctab <- do.call(cbind,lvar_qctab)
+    
+    lvar_dir       <- ncvar_get(ncfile,"DIRECTION")
+    lvar_direction <- llply(lvar_dir,function(dirstring){
+      strsplit(dirstring,split="")
+    })
+    lvar_direction <- unlist(lvar_direction)
+    # making dataframes, removing the NANs  
+    alevels <- 1:N_LEVELS
+    d <- ldply(as.list(1:N_PROF),function(iprof){
+      indexes <- !(is.na(lvar[,iprof])|is.na(lvar[,iprof]))
+      if(sum(indexes) == 0){
+        return (data.frame())
+      }
+      
+      data.frame(value    = lvar[indexes,iprof],
+                 qc       = as.integer(lvar_qctab[indexes,iprof]),
+                 alevel   = alevels[indexes],
+                 depth    = pres[indexes,iprof],
+                 dir      = lvar_direction[iprof],
+                 aprofile = iprof,
+                 variable = Var)
+    })
+    
+    d$juld <- juld[d$aprofile]
+    d$lon  <- lon[d$aprofile]
+    d$lat  <- lat[d$aprofile]
+    
+    return(d=d)
+  })
+}  
+#2 five-points median filter
+mmed <- function(x,n=5){runmed(x,n)}
+#3 Determination of day/night profiles
+DayOrNight <- function(dataframe){
+  
+  d <- ldply(as.list(unique(dataframe$juld)), function(juld){
+    
+    #print(juld)
+    
+    origin <- ymd_hms("1950-01-01 00:00:00") # julian day origin for the Argo program
+    
+    # get temporary profile and metadata
+    tmp <- dataframe[dataframe$juld == juld,]
+    lat <- tmp$lat[1]
+    lon <- tmp$lon[1]
+    n <- length(tmp$depth) #number of points in the profile
+    
+    # determine day or night
+    tmp_juld <- origin + juld * 3600 * 24 #conversion of juld in working day and hour
+    date <- format(tmp_juld, tz="Europe/Sofia", usetz=TRUE)
+    date2 <- as.Date(as.POSIXct(tmp_juld, 'Europe/Sofia')) # convert juld into a a "Date" object
+    
+    hour <- format(as.POSIXct(strftime(tmp_juld,"%Y-%m-%d %H:%M:%S",tz="Europe/Sofia", usetz = T)),format = "%H")
+    data <- data.frame(date = date2, lat = lat, lon = lon) # create a dataframe for the function getSunlightTimes
+    sun_cycle <- getSunlightTimes(data = data, keep = c("sunset", "sunrise"), tz = "Europe/Sofia")# get the sunset and sunrise hours
+    
+    # local sunrise/sunset hours
+    hour_sunrise <- as.numeric(format(sun_cycle$sunrise, "%H"))
+    hour_sunset <- as.numeric(format(sun_cycle$sunset, "%H"))
+    
+    if(is.na(hour_sunrise)){ # needed for profiles without latitude/longitude
+      sun <- "NA"
+    }else if(as.numeric(hour) < hour_sunset & as.numeric(hour) > hour_sunrise){
+      sun <- "day"
+    }else{
+      sun <- "night"
+    }
+    
+    date <- rep(date, times = n)
+    sun <- rep(sun, times = n)
+    
+    data.frame(date = date, day_night = sun)
+    
+  })
+  
+  return(d)
+}
+#4 Function to reinitialize dataframes after cleaning (row numbers, new IDs)
+clean_remove <- function(dataframe, vector_filter){
+  dataframe <- dataframe[dataframe$juld %in% vector_filter,]
+  rownames(dataframe) <- NULL
+  dataframe <- transform(dataframe, id=as.numeric(factor(juld)))
+  dataframe <- dataframe[order(dataframe$id),]
+}
+#5 Function to normalize data 
+normalize <- function(data){
+  data <- (data - min(data, na.rm = T))/(max(data, na.rm = T) - min(data, na.rm = T))
+}
+########
+# DATA #
+########
+filename <- "6903240_Mprof2020.nc"
+data <- ldply(as.list(filename),function(file){
+  
+  #Opening the file in a open-only mode
+  ncfile   <<- nc_open(file, write = FALSE, verbose = F, suppress_dimvals = FALSE)
+  
+  print(file)
+  
+  #Dimensions
+  N_PROF   <- ncol(ncvar_get(ncfile,"PRES"))
+  N_LEVELS <- nrow(ncvar_get(ncfile,"PRES"))
+  juld     <- ncvar_get(ncfile,"JULD")
+  pres     <- ncvar_get(ncfile,"PRES")
+  lon      <- ncvar_get(ncfile,"LONGITUDE")
+  lat      <- ncvar_get(ncfile,"LATITUDE")
+  
+  FloatInfo <- list(N_PROF=N_PROF,
+                    N_LEVELS=N_LEVELS,
+                    juld=juld,
+                    pres=pres,
+                    lon=lon,
+                    lat=lat)
+  
+  chladf <- ExtractVar("CHLA", FloatInfo)
+  bbpdf <- ExtractVar("BBP700", FloatInfo)
+  
+  if (file == "7900591_Mprof.nc" | file == "7900592_Mprof.nc"){ #change M for merged or S for synthetic profiles
+    cdomdf <- as.data.frame(rep(NA, length(chladf$value)))
+    colnames(cdomdf) <- "value"
+  }else{
+    cdomdf <- ExtractVar("CDOM", FloatInfo)
+  }
+  
+  # for a dimension mismatch issue occurring with FLOAT WMO 6900807 (between BBP and CHLA)
+  if(file == "6900807_Mprof.nc"){
+    chladf <- join(bbpdf, chladf, by = c("alevel", "aprofile"))
+    chladf <- chladf[,11:18]
+    cdomdf <- join(bbpdf, cdomdf, by = c("alevel", "aprofile"))
+    cdomdf <- cdomdf[,11:18]
+  }
+  
+  id <- ncvar_get(ncfile, "PLATFORM_NUMBER") 
+  
+  day_night <- DayOrNight(chladf)
+  
+  data.frame(depth    = chladf$depth,
+             juld     = chladf$juld,
+             fluo     = chladf$value,# fluo = chla converted from fluo data
+             bbp      = bbpdf$value,
+             cdom     = cdomdf$value,
+             qc_fluo  = chladf$qc,
+             qc_bbp   = bbpdf$qc, #no qc_cdom because qc_cdom is always 0 so we cannot exploit it
+             day      = month.day.year(chladf$juld,c(1,1,1950))$day,
+             month    = month.day.year(chladf$juld,c(1,1,1950))$month,
+             year     = month.day.year(chladf$juld,c(1,1,1950))$year,
+             DOY      = as.integer(strftime(as.Date(chladf$juld,origin = '1950-01-01'), format ="%j")),#Day Of Year
+             lon      = chladf$lon,
+             lat      = chladf$lat,
+             dir      = chladf$dir,
+             day_night = day_night$day_night,
+             date_long = day_night$date,
+             platform = as.numeric(unique(id))
+  )
+})
+```
+
+
+```{r chla_correction_filter, include = F, results=F}
+#REMOVE BAD DATA
+data <- data[-(which(data$qc_fluo == 4)),] 
+rownames(data) <- NULL
+data <- data[-(which(data$depth < 0)),]
+#Day of deployment
+data <- data[data$DOY == 88 & data$year == 2018,]
+smoothed_fluo <- ldply(as.list(unique(data$juld)), function(i){
+  tmp <- data[data$juld == i,]
+  tmp <- mmed(tmp$fluo, 5)
+  data.frame(smoothed_fluo = tmp)
+})
+smoothed_cdom <- ldply(as.list(unique(data$juld)), function(i){
+  tmp <- data[data$juld == i,]
+  tmp <- mmed(tmp$cdom, 5)
+  data.frame(smoothed_cdom = tmp)
+})
+#REPLACE FLUO WITH SMOOTHED FLUO & CDOM
+data[,3] <- smoothed_fluo
+data[,4] <- smoothed_cdom
+data <- clean_remove(data, unique(data$juld))
+data_info <- ddply(data,~juld,summarize,
+                    qc_fluo = qc_fluo[which.max(fluo)],
+                    depthmax = depth[which.max(fluo)],
+                    maxvalue = fluo[which.max(fluo)],
+                    depthmin = depth[which.max(fluo):length(fluo)][which.min(fluo[which.max(fluo):length(fluo)])],
+                    integration = sum(fluo),
+                    bottomdepth = max(depth),
+                    min_depth = min(depth),
+                    dir = dir[1],
+                    lon=mean(lon),
+                    lat=mean(lat),
+                    platform = platform[1],
+                    day = day[1], month = month[1],
+                    year = year[1], DOY = DOY[1])
+rm(ncfile, smoothed_cdom, smoothed_fluo)
+```
+
+
+```{r chla_correction_density, include = F, results=F}
+# compute density profiles
+density_profiles <- ldply(as.list(filename),function(file){
+  
+  ncfile   <<- nc_open(file, write = FALSE, verbose = F, suppress_dimvals = FALSE)
+  N_PROF   <- ncol(ncvar_get(ncfile,"PRES"))
+  N_LEVELS <- nrow(ncvar_get(ncfile,"PRES"))
+  juld     <- ncvar_get(ncfile,"JULD")
+  pres     <- ncvar_get(ncfile,"PRES")
+  lon      <- ncvar_get(ncfile,"LONGITUDE")
+  lat      <- ncvar_get(ncfile,"LATITUDE")
+  FloatInfo<-list(N_PROF=N_PROF,
+                  N_LEVELS=N_LEVELS,
+                  juld = juld,
+                  pres=pres,
+                  lon=lon,
+                  lat=lat)
+  
+  #NO ADJUSTED VALUE FOR PSAL AND TEMP FOR EACH FLOAT
+  tempdf <- ExtractVar("TEMP",FloatInfo)
+  tempdf$value[which(tempdf$qc == 4 | tempdf$qc == 3)] <- NA
+  psaldf <- ExtractVar("PSAL",FloatInfo)
+  psaldf$value[which(psaldf$qc == 4 | psaldf$qc == 3)] <- NA
+  
+  #DENSITY ANOMALY BASED ON TEOS-10
+  psal <- gsw_SA_from_SP(psaldf$value,psaldf$depth,psaldf$lon,psaldf$lat)
+  temp <- gsw_CT_from_t(psal,tempdf$value,tempdf$depth)
+  sigma <- gsw_sigma0(psal,temp)
+  
+  id <- ncvar_get(ncfile, "PLATFORM_NUMBER") 
+  
+  data.frame(sigma = sigma,
+             depth = tempdf$depth, 
+             juld  = tempdf$juld, 
+             dir   = tempdf$dir,
+             lon   = tempdf$lon,
+             lat   = tempdf$lat,
+             #day      = month.day.year(tempdf$juld,c(1,1,1950))$day,
+             month    = month.day.year(tempdf$juld,c(1,1,1950))$month,
+             year     = month.day.year(tempdf$juld,c(1,1,1950))$year,
+             DOY   = as.integer(strftime(as.Date(tempdf$juld,origin = '1950-01-01'), 
+                                         format ="%j")),
+             platform = as.numeric(unique(id)))
+})
+density_profiles <- clean_remove(density_profiles, unique(data$juld))
+data_info <- transform(data_info,id=as.numeric(factor(juld)))
+density_profiles <- transform(density_profiles,id=as.numeric(factor(juld)))
+#MLD computation
+sigma_criteria <- 0.03
+depth_ref <- 10
+MLDdf <- ldply(as.list(1:length(unique(density_profiles$id))), function(i){
+  
+  tmp <- density_profiles[density_profiles$id == i,]
+  rownames(tmp) <- NULL
+  
+  if(all(is.na(tmp$sigma)) == TRUE){
+    MLD <- NA
+    sigma_surface <- NA
+  }else if(length(tmp$sigma[!is.na(tmp$sigma)==TRUE])>=2){
+    sigma_surface<-NA
+    sigma_surface <- approx(tmp$depth,tmp$sigma,depth_ref)$y
+  }
+  
+  if(is.na(sigma_surface) == FALSE){
+    MLD <- max(tmp$depth[tmp$sigma <= (sigma_surface + sigma_criteria)], na.rm = T)
+  }else{
+    MLD <- NA
+  }
+  
+  if(is.na(MLD) == TRUE){
+    sigmaMaxMLD <- NA
+  }else{
+    sigmaMaxMLD <- mean(tmp$sigma[which(tmp$depth == MLD)], na.rm =T) #check this, pq max mld? #####################################################################
+  }
+  
+  show(i)
+  
+  data.frame(sigma_surface = sigma_surface, MLD = MLD, sigmaMaxMLD = sigmaMaxMLD,
+             juld = tmp$juld[1], lat=tmp$lat[1], lon=tmp$lon[1], day = month.day.year(tmp$juld[1],c(1,1,1950))$day,
+             month = month.day.year(tmp$juld[1],c(1,1,1950))$month,
+             year = month.day.year(tmp$juld[1],c(1,1,1950))$year,
+             DOY = as.integer(strftime(as.Date(tmp$juld[1],origin = '1950-01-01'), 
+                                       format ="%j")),
+             platform = tmp$platform[1])
+})
+# manual adjust because density inversion
+MLDdf$MLD[3] <- 23.5
+```
+
+
+```{r chla_correction_roesler, include = F, results=F}
+# add a column to the 'profiles' dataframe with OLD_CHLA (will save the uncorrected chla, can be useful for some plots)
+data$raw_fluo <- data$fluo
+# Add Roesler Correction
+data$fluo <- data$fluo * 0.65
+data$raw_roesler <- data$fluo
+#EACH PROFILES HAS BEEN VALIDATED SO FAR ==> CALIBRATION EXERCISE STARTS NOW
+#LET'S DO IT ONLY FOR THE DEEP PROFILE
+#FDOM-based method (Xing et al. 2017)
+#keep only the validation profile (i.e. id = 1)
+data <- data[data$id == 3,]
+data_info <- clean_remove(data_info, unique(data$juld))
+MLDdf <- clean_remove(MLDdf, unique(data$juld))
+data <- transform(data,id=as.numeric(factor(juld)))
+#FDOM-BASED CORRECTION AND MINIMUM-OFFSET CORRECTION
+FDOM_OR_MINIMUM_OFFSET_CORRECTION <- ldply(as.list(1:length(unique(data$id))), function(i){
+  tmp <- data[data$id == i,]
+  MaxDepth <- data_info$bottomdepth[i]#Max depth of the profile
+  TopDepth <- data_info$depthmin[i]#Apparent minimum 
+  
+  if(all(is.na(tmp$cdom)) == TRUE){#no cdom sensor hence minimum-offset correction procedure
+    offset <- tmp$fluo[which(tmp$depth == TopDepth)]
+    fluo_cor <- tmp$fluo - offset
+    fluo_cor[which(tmp$depth == TopDepth):length(tmp$depth)] <- 0
+    slope_fdom <- NA
+    C <- NA
+  }else{#FDOM-based method
+    calibrange <- tmp[which(tmp$depth == TopDepth):length(tmp$depth),]
+    linearMod <- lm(fluo ~ cdom, data = calibrange)
+    slope_fdom <- coef(linearMod)[[2]]
+    C <- coef(linearMod)[[1]]
+    fluo_cor <- tmp$fluo - slope_fdom*tmp$cdom - C
+  }
+  
+  data.frame(depth = tmp$depth, fluo_cor = fluo_cor, 
+             slope_fdom = rep(slope_fdom, length(fluo_cor)),
+             C = rep(C, length(fluo_cor)), juld = tmp$juld[1], platform = tmp$platform[1], year = tmp$year[1])
+})
+#USE THE FDOM
+data[,3] <- FDOM_OR_MINIMUM_OFFSET_CORRECTION$fluo_cor
+data$raw_roesler_fdom <- data$fluo
+```
+
+
+```{r chla_correction_quenching, include = F, results=F}
+#QUENCHING CORRECTION
+#NOTE : This function was given to me by Marin Cornec (PhD Student at the LOV)
+quenching_correction <- function(fluo,depth,MLD) {
+  if(is.na(MLD) == FALSE){
+    f <- fluo[!is.na(fluo) & depth <= MLD]
+    d <- depth[!is.na(fluo) & depth <= MLD]
+    zMax <- d[which.max(f)]
+    Max <- max(f)
+    Corfluo <- fluo
+    #Criteria from Schmechtig et al. 2014
+    if(!is.na(MLD) & min(f[d<=zMax])<=(0.9*Max)) Corfluo[depth<=zMax] <- Max
+    return(Corfluo)
+  }else{
+    return(fluo)
+  }
+}
+#NPQ correction adapted to daily and nightly (DN) profiles
+NPQ_correction_DN_adapted <- ldply(as.list(1:length(unique(data$id))), function(i){
+  
+  tmp <- data[data$id == i,]
+  
+  if(tmp$day_night[1] == "day"){
+    correction <- quenching_correction(tmp$fluo, tmp$depth, MLDdf$MLD[i]) # NPQ correction only applies for daily profiles
+  }else{correction <- tmp$fluo}#for nightly profiles
+  
+  data.frame(fluo_NPQ = correction)
+})
+data$fluo <- NPQ_correction_DN_adapted$fluo_NPQ # all correction here except the "positivation step" : fluo here = RAW + ROESLER + FDOM + NPQ
+#REPLACE < 0 of CHLA by 0 (fair assumption.. ?) ===> MUST BE DONE AFTER THE FDOM CORRECTION (in that case we need to RENORMALIZE CHLA DATA IN PROFILES)
+# data$fluo[which(data$fluo < 0)] <- 0
+# data$fluo_npq[which(data$fluo_npq < 0)] <- 0
+```
+
+```{r RMSE COMPUTATION}
+
+# COMPUTE STATS BELOW
+
+depth_hplc <- c(0,30,50,70,90,100,140,200,250,500,750,1000)
+chla_hplc <- c(0.6111,0.6433,0.3090,0.0675,0.0229,0.0168,0.012,0.0032,
+               0.0035, 0.0023, 0.0039, 0.0042)
+hplc <- as.data.frame(cbind(depth_hplc, chla_hplc))
+
+indexdepth <- vector()
+
+for (i in 1:length(hplc$chla)){
+  indexdepth[i] <- which.min(abs(data$depth - hplc$depth_hplc[i]))
+}
+
+# RMSE DEEP LAYER FDOM CORRECTED PROFILE
+index <- which(hplc$depth_hplc > data_info$depthmin & hplc$depth_hplc < data_info$bottomdepth)
+deep_layer <- indexdepth[index]
+rmse_deep_layer <- sqrt(sum((hplc$chla_hplc[index] - data$raw_roesler_fdom[deep_layer])^2)/length(hplc$depth_hplc[index]))
+
+# SAME FOR THE RAW PROFILE
+rmse_deep_layer_old <- sqrt(sum((hplc$chla_hplc[index] - data$raw_fluo[deep_layer])^2)/length(hplc$depth_hplc[index]))
+
+# RMSE SURFACE LAYER
+index <- which(hplc$depth_hplc < data_info$depthmin & hplc$depth_hplc < data_info$bottomdepth)
+surface_layer <- indexdepth[index]
+rmse_surface_layer <- sqrt(sum((hplc$chla_hplc[index] - data$raw_roesler_fdom[surface_layer])^2)/length(hplc$depth_hplc[index]))
+
+# RMSE SURFACE LAYER with NPQ
+index <- which(hplc$depth_hplc < data_info$depthmin & hplc$depth_hplc < data_info$bottomdepth)
+surface_layer <- indexdepth[index]
+rmse_surface_layer <- sqrt(sum((hplc$chla_hplc[index] - data$fluo[surface_layer])^2)/length(hplc$depth_hplc[index]))
+
+# SAME FOR THE RAW PROFILE
+rmse_surface_layer_old <- sqrt(sum((hplc$chla_hplc[index] - data$raw_fluo[surface_layer])^2)/length(hplc$depth_hplc[index]))
+
+## ALL PROFILES RMSE BLABLABLA ---
+
+index <- 1:12
+surface_layer <- indexdepth[index]
+#fdom
+rmse_fdom <- sqrt(sum((hplc$chla_hplc[index] - data$raw_roesler_fdom[surface_layer])^2)/length(hplc$depth_hplc[index]))
+
+#fdom+npq
+rmse_npq <- sqrt(sum((hplc$chla_hplc[index] - data$fluo[surface_layer])^2)/length(hplc$depth_hplc[index]))
+
+#raw
+rmse_raw <- sqrt(sum((hplc$chla_hplc[index] - data$raw_fluo[surface_layer])^2)/length(hplc$depth_hplc[index]))
+
+```
+
+
+```{r correction_fig, include = T}
+day <- doxy$juld[236208]
+oxy <- doxy[doxy$juld == day,] # closest oxy profile (in time) .. (it's the good float at least ..)
+#HPLC DATA FROM DEPLOYMENT
+depth_hplc <- c(0,30,50,70,90,100,140,200,250,500,750,1000)
+chla_hplc <- c(0.6111,0.6433,0.3090,0.0675,0.0229,0.0168,0.012,0.0032,
+               0.0035, 0.0023, 0.0039, 0.0042)
+hplc <- as.data.frame(cbind(depth_hplc, chla_hplc))
+
+#trick for CDOM
+df <- subset(data, select = c('depth', 'cdom'))
+df <- df[!duplicated(df$depth),]
+
+
+deployment <- ggplot(data, aes(x = fluo, y = depth, colour = "ROESLER + FDOM + NPQ")) + geom_path(size = 0.5) +
+  scale_y_reverse() + geom_path(data = data, aes(x = raw_roesler_fdom, y = depth, colour = "ROESLER + FDOM")) +
+  xlab(expression(Chlorophyll~a~(mg/m^3)))+ ylab("Depth [m]") +
+  geom_hline(yintercept = data_info$depthmin[1], color = "black", lty = 2) +
+  annotate("text", x = .8, y = data_info$depthmin[1]-20, label = "CHLA MINIMUM") +
+  geom_path(data = data, aes(x = raw_fluo, y = depth, colour = "None (RAW)")) + 
+  geom_path(data = data, aes(x = raw_roesler, y = depth, colour = "ROESLER")) + 
+  geom_point(data = df, aes(x = cdom/10, y = depth), colour = "black", size = .5) + 
+  geom_point(data=hplc, aes(y = depth_hplc, x = chla_hplc), colour = "red", size = 2, shape = 15)  + 
+  scale_color_discrete(name = "Correction") +
+  theme_bw() + theme(legend.position = "none")
+
+zoom_deployment <- ggplot(data, aes(x = fluo, y = depth, colour = "ROESLER + FDOM + NPQ")) + geom_path(size = 0.5) +
+  scale_y_reverse(limits = c(100,0)) + geom_path(data = data, aes(x = raw_roesler_fdom, y = depth, colour = "ROESLER + FDOM")) +
+  xlab(expression(Chlorophyll~a~(mg/m^3)))+ ylab("Depth [m]") +
+  geom_path(data = data, aes(x = raw_fluo, y = depth, colour = "None (RAW)")) + 
+  geom_path(data = data, aes(x = raw_roesler, y = depth, colour = "ROESLER")) + 
+  geom_point(data=hplc, aes(y = depth_hplc, x = chla_hplc), colour = "red", size = 2, shape = 15)  + 
+  scale_color_discrete(name = "Correction") +
+  theme_bw() + theme(axis.title.y=element_blank()) 
+
+grid.arrange(deployment, zoom_deployment, nrow = 1, ncol = 2)
+```
+
+# Profile shapes + fitted curves
+ 
+```{r shapes, include = T}
+fit_curve <- function(i){
+  tmp <- init_fit[i,]
+  juld <- tmp$juld
+  tmp2 <- init_profiles[init_profiles$juld == juld,]
+  shape <- as.character(tmp$shape)
+  tmp2$fluo <- normalize(tmp2$fluo) #
+  depthindex <- which.min(tmp2$depth <= 90)
+  tmp2 <- tmp2[1:depthindex,]
+  tab <- data.frame(x=tmp2$depth,y=tmp2$fluo)
+  z <- tab$x
+  # only 4 shapes (E has not been encountered)
+  if(shape == "G"){
+    dat <- as.data.frame(fgauss(z, tmp$Fmax, tmp$Zmax, tmp$dz))
+    colnames(dat) <- "fit"
+    dat$fit <- normalize(dat$fit)
+    dat <- cbind(tmp2$depth, dat)
+  }else if(shape == "S"){
+    dat <- as.data.frame(fsigmoid(z, tmp$Fsurf, tmp$Zdemi, tmp$s))
+    colnames(dat) <- "fit"
+    dat$fit <- normalize(dat$fit)
+    dat <- cbind(tmp2$depth, dat)
+  }else if(shape == "GS"){
+    dat <- as.data.frame(fgauss_sigmoid(z, tmp$Fsurf, tmp$Zdemi, tmp$s, tmp$Fmax, tmp$Zmax, tmp$dz))
+    colnames(dat) <- "fit"
+    dat$fit <- normalize(dat$fit)
+    dat <- cbind(tmp2$depth, dat)
+  }else if(shape == "GE"){
+    dat <- as.data.frame(fgauss_expo(z, tmp$Fsurf, tmp$Zdemi, tmp$Fmax, tmp$Zmax, tmp$dz))
+    colnames(dat) <- "fit"
+    dat$fit <- normalize(dat$fit)
+    dat <- cbind(tmp2$depth, dat)
+  }
+  ggplot(tmp2, aes(x = fluo, y = depth)) + geom_point() + scale_y_reverse(limits = c(90,0)) +
+    xlab("Normalized Chla") + ylab("Depth [m]") + geom_path(data = dat, aes(x = fit, y = tmp2$depth), colour = "red") +
+    #theme(text=element_text(size=12)) 
+    theme_bw()
+   
+}
+```
+
+```{r profile_examples}
+# # i = 7: jolie sigmoide
+# # GS : 12, 103 ! ==> aussi voir 154, 156
+# # G : 111 143 178 183 331 487 542 730 830 , TRÈS souvent des doubles pics ..
+# # GE : 119, 195
+flabels <- c("Gaussian (G)","Sigmoid (S)","Gaussian-Sigmoid (GS)","Gaussian-Exponential (GE)")
+profID  <- c(111,7,12,195)
+
+# require(plyr)
+# pl<-llply(seq(length(flabels)), function(i){
+#   fit_curve(profID[i])+ggtitle(flabels[i])  
+# })
+# do.call(grid.arrange, pl)
+
+ex1 <- fit_curve(profID[1])+ggtitle(flabels[1]) + theme(axis.title.x=element_blank())
+ex2 <- fit_curve(profID[2])+ggtitle(flabels[2]) + theme(axis.title.y=element_blank()) + theme(axis.title.x=element_blank())
+ex3 <- fit_curve(profID[3])+ggtitle(flabels[3]) 
+ex4 <- fit_curve(profID[4])+ggtitle(flabels[4]) + theme(axis.title.y=element_blank())
+
+grid.arrange(ex1, ex2, ex3, ex4, nrow = 2, ncol = 2)
+
+```
+
+
