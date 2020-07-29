@@ -634,7 +634,7 @@ profiles$fluo[which(profiles$fluo < 0)] <- 0
 init_profiles <- profiles
 init_density_profiles <- filter(density_profiles, juld %in% profiles$juld)
 
-# keep MLD data for 2014-2018 before the fit
+# keep MLD data before the fit
 init_MLD <- filter(MLDdf, juld %in% profiles$juld)
 
 ################################################
