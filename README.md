@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/277763330.svg)](https://zenodo.org/badge/latestdoi/277763330)
+
 # Welcome ! 
 
 This is a small repository where you will find some scripts and markdown files used to study the Deep Chlorophyll Maximum in the Black Sea using Biogeochemical-Argo floats.
