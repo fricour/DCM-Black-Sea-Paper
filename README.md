@@ -1,6 +1,6 @@
 # Welcome ! 
 
-This is a small repository where you will find some scripts and markdown files used to study the Deep Chlorophyll Maximum in the Black Sea using Biogeochemical-Argo floats (DOI = ...).
+This is a small repository where you will find some scripts and markdown files used to study the Deep Chlorophyll Maximum in the Black Sea using Biogeochemical-Argo floats.
 
 The available files are the following:
 
