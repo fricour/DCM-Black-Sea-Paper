@@ -345,7 +345,7 @@ integrated_diags <- ddply(complete_tmp2, .(juld,platform), summarize,
                             ISOlow       = try_default(approx(x=depth, y=light, xout=ZLow, rule=2)$y,NA, quiet = FALSE),
                             ISO90B       = try_default(approx(x=depth, y=light, xout=Z90B, rule=2)$y,NA, quiet = FALSE),
                             ISO90T       = try_default(approx(x=depth, y=light, xout=Z90T, rule=2)$y,NA, quiet = FALSE),
-                            ISOMLD       = min(light, na.rm = TRUE),
+                            ISOMLD       = try_default(approx(x=depth, y=light, xout=MLD, rule=2)$y,NA, quiet = FALSE)
                             ISOMAX       = try_default(approx(x=depth, y=light, xout=unique(Zmax), rule=2)$y,NA, quiet = FALSE),
                             ISODEMI      = try_default(approx(x=depth, y=light, xout=unique(Zdemi), rule=2)$y,NA, quiet = FALSE),
                           # just to see
