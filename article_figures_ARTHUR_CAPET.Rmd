@@ -276,6 +276,7 @@ integrated_diags_par <- ddply(initPAR, .(juld,platform), summarize,
 
 ```
 
+
 ```{r}
 # Add scalr diagnostics to the complete dataframe for vertical integration
 if (freshstart){
@@ -284,6 +285,26 @@ complete_tmp2 <- merge(complete_tmp,integrated_diags_par, by=c('juld','platform'
 
 ```
 
+```{r add light data to full data}
+interpolated_light_data <- ldply(as.list(unique(complete_tmp2$juld)), function(i){
+  tmp1 <- complete_tmp2[complete_tmp2$juld == i,]
+  tmp2 <- initPAR[initPAR$juld == i,]
+  if(nrow(tmp2) == 0){
+    absolute_light <- rep(NA, nrow(tmp1))
+    # relative % of incoming surface PAR
+    relative_light <- absolute_light
+  }else{
+    absolute_light <- approx(tmp2$depth, tmp2$par, tmp1$depth)$y
+    # compute relative % of incoming surface PAR
+    relative_light <- (absolute_light/tmp2$par[1])*100 # could also put max(tmp2$par) car surface = max_par, therefore no ordering issue will appear (but tmp2$par[1] is good) 
+  }
+  data.frame(depth = tmp1$depth, absolute_light = absolute_light, relative_light = relative_light)
+})
+
+# add it to complete_tmp2
+complete_tmp2 <- cbind(complete_tmp2, light = interpolated_light_data$relative_light, light_absolute = interpolated_light_data$absolute_light)
+
+```
 
 ```{r IntegratedDiagsdf, error=FALSE, warning=FALSE, echo=FALSE, message=FALSE, results='hide', include=FALSE, eval=TRUE}
 # TOTAL CHL, integration using first linear interpolation on a regular grid, then sum.
@@ -318,7 +339,17 @@ integrated_diags <- ddply(complete_tmp2, .(juld,platform), summarize,
                             sigmaMAX       = try_default(approx(x=depth, y=sigma, xout=unique(Zmax), rule=2)$y,NA, quiet = FALSE),
                             sigmaDEMI      = try_default(approx(x=depth, y=sigma, xout=unique(Zdemi), rule=2)$y,NA, quiet = FALSE), 
                             #Ziso1         = isoPAR(depth = depth , PAR = par),
-                            sigmaiso1      = try_default(approx(x=depth, y=sigma, xout=unique(Ziso1b), rule=2)$y,NA, quiet = FALSE)
+                            sigmaiso1      = try_default(approx(x=depth, y=sigma, xout=unique(Ziso1b), rule=2)$y,NA, quiet = FALSE),
+                          ### 
+                          # Adding diags for LIGHT Horizon here
+                            ISOlow       = try_default(approx(x=depth, y=light, xout=ZLow, rule=2)$y,NA, quiet = FALSE),
+                            ISO90B       = try_default(approx(x=depth, y=light, xout=Z90B, rule=2)$y,NA, quiet = FALSE),
+                            ISO90T       = try_default(approx(x=depth, y=light, xout=Z90T, rule=2)$y,NA, quiet = FALSE),
+                            ISOMLD       = min(light, na.rm = TRUE),
+                            ISOMAX       = try_default(approx(x=depth, y=light, xout=unique(Zmax), rule=2)$y,NA, quiet = FALSE),
+                            ISODEMI      = try_default(approx(x=depth, y=light, xout=unique(Zdemi), rule=2)$y,NA, quiet = FALSE),
+                          # just to see
+                            ISO_iso1 = try_default(approx(x=depth, y=light, xout=unique(Ziso1b), rule=2)$y,NA, quiet = FALSE)
                           )
 }
 ```
@@ -451,8 +482,8 @@ ggplot(tmp_zmax, aes(x=month, fill=variable, color=variable)) +
 ```{r Fig6}
 tmp_sig1 <- subset(tmp_fitco, select = c('month','sigmaMLD','sigmaMAX','sigmalow','sigma90B','sigma90T','sigmaiso1' ,'dcm_or_not','year','shape'))
 
-tmp_sig1$sigmaMAX[tmp_sig1$dcm_or_not==0]<-NA
-tmp_sig1$sigmaMAX[tmp_sig1$Zmax>200]<-NA
+tmp_sig1$ISOMAX[tmp_sig1$dcm_or_not==0]<-NA
+tmp_sig1$ISOMAX[tmp_sig1$Zmax>200]<-NA
 
 tmp_sig <- melt(tmp_sig1[,-which(colnames(tmp_sig1)=='dcm_or_not')], id.vars=c('month','year','shape'))
 
@@ -478,6 +509,39 @@ ggplot(tmp_sig, aes(x=month, fill=variable, color=variable)) +
 
 ## How to maintain all data even those out of axis limits : https://stackoverflow.com/questions/25685185/limit-ggplot2-axes-without-removing-data-outside-limits-zoom
 
+
+```
+
+## Absolute light Horizons
+
+```{r Review Fig light}
+
+tmp_iso1 <- subset(tmp_fitco, select = c('month','ISOMLD','ISOMAX','ISOlow','ISO90B','ISO90T','ISO_iso1' ,'dcm_or_not','year','shape'))
+
+tmp_iso1$sigmaMAX[tmp_iso1$dcm_or_not==0]<-NA
+tmp_iso1$sigmaMAX[tmp_iso1$Zmax>200]<-NA
+
+tmp_iso <- melt(tmp_iso1[,-which(colnames(tmp_iso1)=='dcm_or_not')], id.vars=c('month','year','shape'))
+
+
+ggplot(tmp_iso, aes(x=month, fill=variable, color=variable)) +
+    geom_smooth(aes(y=value),stat = 'summary',
+#              fun.data = median_hilow,
+              fun.data = mean_cl_boot,
+              fun.args = list(conf.int = 0.95), alpha=0.5)+
+  geom_boxplot(aes(y=value, group=interaction(month,variable)), alpha=0.2, notch = TRUE)+
+        scale_x_continuous(NULL, labels = month.abb, breaks = seq(1,12)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+  #scale_y_continuous(trans = 'log10') + ylab('[microMoleQuanta/m^2/sec]') +
+  ylab('% of Incoming PAR') + theme_bw()  + scale_y_continuous(trans = 'log10') +
+      scale_color_brewer(aesthetics = c("colour", "fill"),type = qual ,palette=MyPal,
+                       name="ISO Horizons", 
+                       labels=list(TeX('$\\ISO_{MLD}$'),
+                                TeX('$\\ISO_{DCM}$'),
+                                TeX('$\\ISO_{low}$'),
+                                TeX('$\\ISO_{50,bottom}$'),
+                                TeX('$\\ISO_{50,top}$'),
+                                TeX('$\\ISO_{\\mathrm{PAR}\\,1%}$')))
 
 ```
 
