@@ -303,6 +303,7 @@ interpolated_light_data <- ldply(as.list(unique(complete_tmp2$juld)), function(i
 
 # add it to complete_tmp2
 complete_tmp2 <- cbind(complete_tmp2, light = interpolated_light_data$relative_light, light_absolute = interpolated_light_data$absolute_light)
+#complete_tmp2 <- cbind(complete_tmp2, light = interpolated_light_data$absolute_light)
 
 ```
 
@@ -348,8 +349,15 @@ integrated_diags <- ddply(complete_tmp2, .(juld,platform), summarize,
                             ISOMLD       = try_default(approx(x=depth, y=light, xout=unique(MLD), rule=2)$y,NA, quiet = FALSE),
                             ISOMAX       = try_default(approx(x=depth, y=light, xout=unique(Zmax), rule=2)$y,NA, quiet = FALSE),
                             ISODEMI      = try_default(approx(x=depth, y=light, xout=unique(Zdemi), rule=2)$y,NA, quiet = FALSE),
-                          # just to see
-                            ISO_iso1 = try_default(approx(x=depth, y=light, xout=unique(Ziso1b), rule=2)$y,NA, quiet = FALSE)
+                            ISO_iso1 = try_default(approx(x=depth, y=light, xout=unique(Ziso1b), rule=2)$y,NA, quiet = FALSE),
+                          # Add ABSOLUTE Light levels
+                            ISOalow       = try_default(approx(x=depth, y=light_absolute, xout=ZLow, rule=2)$y,NA, quiet = FALSE),
+                            ISOa90B       = try_default(approx(x=depth, y=light_absolute, xout=Z90B, rule=2)$y,NA, quiet = FALSE),
+                            ISOa90T       = try_default(approx(x=depth, y=light_absolute, xout=Z90T, rule=2)$y,NA, quiet = FALSE),
+                            ISOaMLD       = try_default(approx(x=depth, y=light_absolute, xout=unique(MLD), rule=2)$y,NA, quiet = FALSE),
+                            ISOaMAX       = try_default(approx(x=depth, y=light_absolute, xout=unique(Zmax), rule=2)$y,NA, quiet = FALSE),
+                            ISOaDEMI      = try_default(approx(x=depth, y=light_absolute, xout=unique(Zdemi), rule=2)$y,NA, quiet = FALSE),
+                            ISOa_iso1 = try_default(approx(x=depth, y=light_absolute, xout=unique(Ziso1b), rule=2)$y,NA, quiet = FALSE)
                           )
 }
 ```
@@ -372,7 +380,6 @@ tmp_my <- ddply(tmp_fitc, .(month,year), summarize,
 
 
 ```{r}
-
 tmp_fitco<- tmp_fitc
 tmp_fitco$dcm_or_not[tmp_fitco$shape=="O"]<-1
 tmp_fitc[which((tmp_fitc$month<4)|(tmp_fitc$month>10)),c('Zmax','sigmaMAX','DCMratio')]<-NA
@@ -512,11 +519,13 @@ ggplot(tmp_sig, aes(x=month, fill=variable, color=variable)) +
 
 ```
 
-## Absolute light Horizons
+## Relative & Absolute light Horizons
 
 ```{r Review Fig light}
 
-tmp_iso1 <- subset(tmp_fitco, select = c('month','ISOMLD','ISOMAX','ISOlow','ISO90B','ISO90T','ISO_iso1' ,'dcm_or_not','year','shape'))
+#relative light
+#tmp_iso1 <- subset(tmp_fitco, select = c('month','ISOMLD','ISOMAX','ISOlow','ISO90B','ISO90T','ISO_iso1' ,'dcm_or_not','year','shape'))
+tmp_iso1 <- subset(tmp_fitco, select = c('month','ISOMAX','ISOlow','ISO90B','ISO90T','dcm_or_not','year','shape'))
 
 tmp_iso1$sigmaMAX[tmp_iso1$dcm_or_not==0]<-NA
 tmp_iso1$sigmaMAX[tmp_iso1$Zmax>200]<-NA
@@ -524,27 +533,76 @@ tmp_iso1$sigmaMAX[tmp_iso1$Zmax>200]<-NA
 tmp_iso <- melt(tmp_iso1[,-which(colnames(tmp_iso1)=='dcm_or_not')], id.vars=c('month','year','shape'))
 
 
-ggplot(tmp_iso, aes(x=month, fill=variable, color=variable)) +
+relative_light <- ggplot(tmp_iso, aes(x=month, fill=variable, color=variable)) +
     geom_smooth(aes(y=value),stat = 'summary',
 #              fun.data = median_hilow,
-              fun.data = mean_cl_boot,
+#              fun.data = mean_cl_boot,
               fun.args = list(conf.int = 0.95), alpha=0.5)+
   geom_boxplot(aes(y=value, group=interaction(month,variable)), alpha=0.2, notch = TRUE)+
         scale_x_continuous(NULL, labels = month.abb, breaks = seq(1,12)) +
   theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
   #scale_y_continuous(trans = 'log10') + ylab('[microMoleQuanta/m^2/sec]') +
   ylab('% of Incoming PAR') + theme_bw()  + scale_y_continuous(trans = 'log10') +
-      scale_color_brewer(aesthetics = c("colour", "fill"),type = qual ,palette=MyPal,
+      # scale_color_brewer(aesthetics = c("colour", "fill"),type = qual ,palette=MyPal,
+      #                  name="ISO Horizons", 
+      #                  labels=list(#TeX('$\\ISO_{MLD}$'),
+      #                           TeX('$\\ISO_{DCM}$'),
+      #                           TeX('$\\ISO_{low}$'),
+      #                           TeX('$\\ISO_{50,bottom}$'),
+      #                           TeX('$\\ISO_{50,top}$')))#,
+      #                           #TeX('$\\ISO_{\\mathrm{PAR}\\,1%}$')))
+      scale_color_manual(aesthetics = c("colour", "fill"),values = c("#D95F02","#7570B3","#E7298A","#66A61E"), # [1] "#1B9E77" "#D95F02" "#7570B3" "#E7298A" "#66A61E" "#E6AB02" "#A6761D" "#666666"
                        name="ISO Horizons", 
-                       labels=list(TeX('$\\ISO_{MLD}$'),
-                                TeX('$\\ISO_{DCM}$'),
+                       labels=list(TeX('$\\ISO_{DCM}$'),
                                 TeX('$\\ISO_{low}$'),
                                 TeX('$\\ISO_{50,bottom}$'),
-                                TeX('$\\ISO_{50,top}$'),
-                                TeX('$\\ISO_{\\mathrm{PAR}\\,1%}$')))
+                                TeX('$\\ISO_{50,top}$')))
 
+relative_light
+
+#absolute light
+tmp_iso1 <- subset(tmp_fitco, select = c('month','ISOaMAX','ISOalow','ISOa90B','ISOa90T','dcm_or_not','year','shape'))
+
+tmp_iso1$sigmaMAX[tmp_iso1$dcm_or_not==0]<-NA
+tmp_iso1$sigmaMAX[tmp_iso1$Zmax>200]<-NA
+
+tmp_iso <- melt(tmp_iso1[,-which(colnames(tmp_iso1)=='dcm_or_not')], id.vars=c('month','year','shape'))
+
+
+absolute_light <- ggplot(tmp_iso, aes(x=month, fill=variable, color=variable)) +
+    geom_smooth(aes(y=value),stat = 'summary',
+#              fun.data = median_hilow,
+#              fun.data = mean_cl_boot,
+              fun.args = list(conf.int = 0.95), alpha=0.5)+
+  geom_boxplot(aes(y=value, group=interaction(month,variable)), alpha=0.2, notch = TRUE)+
+        scale_x_continuous(NULL, labels = month.abb, breaks = seq(1,12)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+  scale_y_continuous(trans = 'log10') + ylab('[microMoleQuanta/m^2/sec]') + theme_bw()+
+  #ylab('% of Incoming PAR') + theme_bw()  + scale_y_continuous(trans = 'log10') +
+      # scale_color_brewer(aesthetics = c("colour", "fill"),type = qual ,palette=MyPal,
+      #                  name="ISO Horizons", 
+      #                  labels=list(TeX('$\\ISO_{DCM}$'),
+      #                           TeX('$\\ISO_{low}$'),
+      #                           TeX('$\\ISO_{50,bottom}$'),
+      #                           TeX('$\\ISO_{50,top}$')))
+    scale_color_manual(aesthetics = c("colour", "fill"),values = c("#D95F02","#7570B3","#E7298A","#66A61E"), # [1] "#1B9E77" "#D95F02" "#7570B3" "#E7298A" "#66A61E" "#E6AB02" "#A6761D" "#666666"
+                       name="ISO Horizons", 
+                       labels=list(TeX('$\\ISO_{DCM}$'),
+                                TeX('$\\ISO_{low}$'),
+                                TeX('$\\ISO_{50,bottom}$'),
+                                TeX('$\\ISO_{50,top}$')))
+
+absolute_light
+
+# # https://www.datanovia.com/en/blog/top-r-color-palettes-to-know-for-great-data-visualization/
+# library(RColorBrewer)
+# display.brewer.pal(n = 8, name = 'Dark2')
+# brewer.pal(n=8, name='Dark2')
+
+
+#grid.arrange(relative_light + theme(legend.position="none"), absolute_light, nrow = 2)
+grid.arrange(relative_light, absolute_light, nrow = 2)
 ```
-
 
 ## Vertical distribution of the CHL content
 
@@ -566,6 +624,7 @@ ggplot(tmp_part, aes(x=month, fill=variable, color=variable)) +
   scale_color_brewer(name='Part of tot. Chl:',
                      labels=c('above MLD','within 5m of DCM','above optical depth'),
                      aesthetics = c("colour", "fill"),type = qual ,palette=MyPal)#+ylim(c(0,100))
+
 ```
 
 ## Concentrations
