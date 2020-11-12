@@ -187,7 +187,7 @@ Att_2band <- function(PRES,PAR0,ks0,kl0,depthP0=0) {
   return(PAR)
 }
 
-p2b_start = c(PAR0 = 1500 ,  ks0 = 0.04 , kl0=0.001) 
+p2b_start = c(PAR0 = 1500 ,  ks0 = 0.04 , kl0=0.01) 
 p2b_lower = c(PAR0 = 0    ,  ks0 = 0    , kl0=0    )
 p2b_upper = c(PAR0 = 2500 ,  ks0 = 3   , kl0=10)
 
@@ -211,7 +211,7 @@ FilterForPAR<-function(depth,PAR){
   return (sum(is.na(PAR))<length(PAR)/2)
 }
 
-## First attempt derives APR @ 1m from interpolation and look for 1/100 of this value
+## First attempt derives PAR @ 1m from interpolation and look for 1/100 of this value
 isoPAR <- function(depth, PAR){
   require(pracma)
   # Intended for Casted DF
@@ -237,8 +237,7 @@ isoPARb <- function(depth, PAR){
     out    <- try_default({
     d <- depth[which( !is.na(depth) & PAR>0.1  )]
     P <- PAR[which( !is.na(depth) & PAR>0.1  )]
-    
-    m <<-nls(PAR ~ Att_2band(depth,PAR0,ks0,kl0),
+    m <<-nls2(PAR ~ Att_2band(depth,PAR0,ks0,kl0),
            data = data.frame(depth=depth, PAR=PAR),
            start = p2b_start, 
            lower = p2b_lower,
@@ -250,7 +249,7 @@ isoPARb <- function(depth, PAR){
     PAR0   <-mcoef[1]
     PARcon <- predict(m,data.frame(depth=seq(1,200)))    
     z100 <- interp1(PARcon,seq(1,200), PAR0/100) 
-      return(z100)},
+      return(c(z100,PAR0))},
       DefOut_isoPAR)
   }else{
     out <- DefOut_isoPAR
@@ -270,7 +269,8 @@ isoPARb <- function(depth, PAR){
 if (freshstart){
 integrated_diags_par <- ddply(initPAR, .(juld,platform), summarize,
                           Ziso1 = isoPAR(depth = depth , PAR = par),
-                          Ziso1b = isoPARb(depth = depth , PAR = par)
+                          Ziso1b = isoPARb(depth = depth , PAR = par)[1],
+                          PAR0  = isoPARb(depth = depth , PAR = par)[2]
                           )
 }
 
@@ -282,30 +282,28 @@ integrated_diags_par <- ddply(initPAR, .(juld,platform), summarize,
 if (freshstart){
 complete_tmp2 <- merge(complete_tmp,integrated_diags_par, by=c('juld','platform'), all.x = TRUE)
 }
-
 ```
+
 
 ```{r add light data to full data}
-interpolated_light_data <- ldply(as.list(unique(complete_tmp2$juld)), function(i){
-  tmp1 <- complete_tmp2[complete_tmp2$juld == i,]
-  tmp2 <- initPAR[initPAR$juld == i,]
-  if(nrow(tmp2) == 0){
-    absolute_light <- rep(NA, nrow(tmp1))
-    # relative % of incoming surface PAR
+complete_tmp2 <- ddply(complete_tmp2,c('juld','platform'), function(dsub){
+  tmp <- subset(initPAR, (platform==dsub$platform[1]) & (juld==dsub$juld[1]) )
+  if(nrow(tmp) == 0){
+    absolute_light <- rep(NA, nrow(dsub))
     relative_light <- absolute_light
   }else{
-    absolute_light <- approx(tmp2$depth, tmp2$par, tmp1$depth)$y
-    # compute relative % of incoming surface PAR
-    relative_light <- (absolute_light/tmp2$par[1])*100 # could also put max(tmp2$par) car surface = max_par, therefore no ordering issue will appear (but tmp2$par[1] is good) 
+    absolute_light <- approx(tmp$depth, tmp$par, dsub$depth)$y
+    relative_light <- (absolute_light/dsub$PAR0)*100 # could also put max(tmp2$par) car surface = max_par, therefore no ordering issue will appear (but tmp2$par[1] is good) 
   }
-  data.frame(depth = tmp1$depth, absolute_light = absolute_light, relative_light = relative_light)
+  dsub$absolute_light<-absolute_light
+  dsub$relative_light<-relative_light
+  return(dsub)
 })
 
-# add it to complete_tmp2
-complete_tmp2 <- cbind(complete_tmp2, light = interpolated_light_data$relative_light, light_absolute = interpolated_light_data$absolute_light)
-#complete_tmp2 <- cbind(complete_tmp2, light = interpolated_light_data$absolute_light)
-
 ```
+
+
+
 
 ```{r IntegratedDiagsdf, error=FALSE, warning=FALSE, echo=FALSE, message=FALSE, results='hide', include=FALSE, eval=TRUE}
 # TOTAL CHL, integration using first linear interpolation on a regular grid, then sum.
@@ -339,17 +337,16 @@ integrated_diags <- ddply(complete_tmp2, .(juld,platform), summarize,
                             sigmaMLD       = min(sigma, na.rm = TRUE),#[which.min(depth)],  !! THIS IS NOT CORRECT !!
                             sigmaMAX       = try_default(approx(x=depth, y=sigma, xout=unique(Zmax), rule=2)$y,NA, quiet = FALSE),
                             sigmaDEMI      = try_default(approx(x=depth, y=sigma, xout=unique(Zdemi), rule=2)$y,NA, quiet = FALSE), 
-                            #Ziso1         = isoPAR(depth = depth , PAR = par),
                             sigmaiso1      = try_default(approx(x=depth, y=sigma, xout=unique(Ziso1b), rule=2)$y,NA, quiet = FALSE),
                           ### 
                           # Adding diags for LIGHT Horizon here
-                            ISOlow       = try_default(approx(x=depth, y=light, xout=ZLow, rule=2)$y,NA, quiet = FALSE),
-                            ISO90B       = try_default(approx(x=depth, y=light, xout=Z90B, rule=2)$y,NA, quiet = FALSE),
-                            ISO90T       = try_default(approx(x=depth, y=light, xout=Z90T, rule=2)$y,NA, quiet = FALSE),
-                            ISOMLD       = try_default(approx(x=depth, y=light, xout=unique(MLD), rule=2)$y,NA, quiet = FALSE),
-                            ISOMAX       = try_default(approx(x=depth, y=light, xout=unique(Zmax), rule=2)$y,NA, quiet = FALSE),
-                            ISODEMI      = try_default(approx(x=depth, y=light, xout=unique(Zdemi), rule=2)$y,NA, quiet = FALSE),
-                            ISO_iso1 = try_default(approx(x=depth, y=light, xout=unique(Ziso1b), rule=2)$y,NA, quiet = FALSE),
+                            ISOlow       = try_default(approx(x=depth, y=relative_light, xout=ZLow, rule=2)$y,NA, quiet = FALSE),
+                            ISO90B       = try_default(approx(x=depth, y=relative_light, xout=Z90B, rule=2)$y,NA, quiet = FALSE),
+                            ISO90T       = try_default(approx(x=depth, y=relative_light, xout=Z90T, rule=2)$y,NA, quiet = FALSE),
+                            ISOMLD       = try_default(approx(x=depth, y=relative_light, xout=unique(MLD), rule=2)$y,NA, quiet = FALSE),
+                            ISOMAX       = try_default(approx(x=depth, y=relative_light, xout=unique(Zmax), rule=2)$y,NA, quiet = FALSE),
+                            ISODEMI      = try_default(approx(x=depth, y=relative_light, xout=unique(Zdemi), rule=2)$y,NA, quiet = FALSE),
+                            ISO_iso1     = try_default(approx(x=depth, y=relative_light, xout=unique(Ziso1b), rule=2)$y,NA, quiet = FALSE),
                           # Add ABSOLUTE Light levels
                             ISOalow       = try_default(approx(x=depth, y=light_absolute, xout=ZLow, rule=2)$y,NA, quiet = FALSE),
                             ISOa90B       = try_default(approx(x=depth, y=light_absolute, xout=Z90B, rule=2)$y,NA, quiet = FALSE),
@@ -357,7 +354,7 @@ integrated_diags <- ddply(complete_tmp2, .(juld,platform), summarize,
                             ISOaMLD       = try_default(approx(x=depth, y=light_absolute, xout=unique(MLD), rule=2)$y,NA, quiet = FALSE),
                             ISOaMAX       = try_default(approx(x=depth, y=light_absolute, xout=unique(Zmax), rule=2)$y,NA, quiet = FALSE),
                             ISOaDEMI      = try_default(approx(x=depth, y=light_absolute, xout=unique(Zdemi), rule=2)$y,NA, quiet = FALSE),
-                            ISOa_iso1 = try_default(approx(x=depth, y=light_absolute, xout=unique(Ziso1b), rule=2)$y,NA, quiet = FALSE)
+                            ISOa_iso1     = try_default(approx(x=depth, y=light_absolute, xout=unique(Ziso1b), rule=2)$y,NA, quiet = FALSE)
                           )
 }
 ```
@@ -398,6 +395,8 @@ dbdf<-subset(dbdf, (month>2)&(month<11))
 dbdf<-subset(dbdf, !is.nan(Zmax))
 
 dbdf$fluo_norm <- dbdf$fluo/dbdf$chla_dcm
+
+
 dbdf$sigma_norm <- (dbdf$sigma-dbdf$sigmaMLD)/(dbdf$sigmaMAX-dbdf$sigmaMLD+.00000001)
 dbdf$depth_norm <- (dbdf$depth-dbdf$MLD)/(dbdf$Zmax-dbdf$MLD+.00000001)
 #dbdf$depth_norm_layers<-factor(dbdf$depth_norm_layers,levels=rev(levels(dbdf$depth_norm_layers)))
@@ -408,35 +407,43 @@ dbdf<-ddply(dbdf,.(platform, juld),mutate,
             bbp_DCM = approx(depth,bbp,Zmax)$y,
             bbp_norm2 = bbp/bbp_DCM)
 
-dbdf$sigma_norm_layers <- cut(dbdf$sigma_norm,seq(0.05,3.05,.05))
-dbdf$depth_norm_layers <- cut(dbdf$depth_norm,seq(0.05,3.05,.05))
+dbdf$ration <- dbdf$fluo_norm/ dbdf$bbp_norm1 
+#dbdf$ratio  <- dbdf$fluo / dbdf$bbp
+
+
+dbdf$sigma_norm_layers <- cut(dbdf$sigma_norm,seq(0.05,3.05,.1))
+dbdf$depth_norm_layers <- cut(dbdf$depth_norm,seq(0.05,3.05,.1))
 ```
 
 
 ```{r}
-blbl<-subset(dbdf, select=c("sigma_norm_layers","fluo_norm", "depth_norm_layers","depth_norm","sigma_norm","bbp_norm1","month",'lon'))
+blbl<-subset(dbdf, select=c("sigma_norm_layers","fluo_norm", "depth_norm_layers",
+                            "depth_norm","sigma_norm","bbp_norm1","month",'lon',"ration"))
 require(reshape2)
+
+
+
 blbl<-melt(blbl, id.vars=.(sigma_norm_layers,depth_norm_layers,month,depth_norm,sigma_norm,lon))
 
 blbl$monthn<-factor(blbl$month, labels = month.abb[unique(blbl$month)])
 
 blbl$variable<-as.character(blbl$variable)
-blbl$variable[which(blbl$variable=="fluo_norm")]<-"Chla - norm."
-blbl$variable[which(blbl$variable=="bbp_norm1")]<-"Bbp - norm."
-
-blbl$variable<-factor(blbl$variable, levels=c("Chla - norm.","Bbp - norm."))
+blbl$variable[which(blbl$variable=="fluo_norm")]<-"Norm. Chla"
+blbl$variable[which(blbl$variable=="bbp_norm1")]<-"Norm. Bbp"
+blbl$variable[which(blbl$variable=="ration")]<-"N. Chla / N. bbp"
+blbl$variable<-factor(blbl$variable, levels=c("Norm. Chla","Norm. Bbp","N. Chla / N. bbp"))
 
 
 bigplot1<-ggplot(subset(blbl, month %in% c(3,4,5,6)), aes(x=depth_norm, y=value))+
       geom_boxplot(aes(group=depth_norm_layers), outlier.size=0.5)+
-  theme_bw()+coord_flip(xlim = c(0,2), ylim=c(0,2))+
-  facet_grid(monthn~variable)+
+  theme_bw()+coord_flip(xlim = c(2,0), ylim=c(0,2))+
+  facet_grid(monthn~variable, scale="free")+
   geom_vline(xintercept  = 1)+xlab('Depth - norm.')+ylab('')
 
 bigplot2<-ggplot(subset(blbl, month %in% c(7,8,9,10)), aes(x=depth_norm, y=value))+
       geom_boxplot(aes(group=depth_norm_layers), outlier.size=0.5)+
-  theme_bw()+coord_flip(xlim = c(0,2), ylim=c(0,2))+
-  facet_grid(monthn~variable)+
+  theme_bw()+coord_flip(xlim = c(2,0), ylim=c(0,2))+
+  facet_grid(monthn~variable, scale="free")+
   geom_vline(xintercept  = 1)+xlab('Depth - norm.')+ylab('')
 ```
 
@@ -445,6 +452,8 @@ bigplot2<-ggplot(subset(blbl, month %in% c(7,8,9,10)), aes(x=depth_norm, y=value
 grid.arrange(bigplot1+scale_x_reverse(),
              bigplot2+scale_x_reverse(), nrow=1)
 ```
+
+
 
 # Depth horizons
 
@@ -502,8 +511,10 @@ ggplot(tmp_sig, aes(x=month, fill=variable, color=variable)) +
               fun.args = list(conf.int = 0.95), alpha=0.5)+
   geom_boxplot(aes(y=value, group=interaction(month,variable)), alpha=0.2, notch = TRUE)+
         scale_x_continuous(NULL, labels = month.abb, breaks = seq(1,12)) +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-  ylab('[kg/m3]')+theme_bw()+coord_cartesian(ylim=c(16,10))+scale_y_reverse()+
+  theme_bw()+
+  theme(panel.grid.minor.x = element_line(colour = "grey"),
+        panel.grid.major.x = element_line(colour = "white")) +
+  ylab('[kg/m3]')+coord_cartesian(ylim=c(16,10))+scale_y_reverse()+
       scale_color_brewer(aesthetics = c("colour", "fill"),type = qual ,palette=MyPal,
                        name="Density Horizons", 
                        labels=list(TeX('$\\sigma_{MLD}$'),
@@ -511,8 +522,7 @@ ggplot(tmp_sig, aes(x=month, fill=variable, color=variable)) +
                                 TeX('$\\sigma_{low}$'),
                                 TeX('$\\sigma_{50,bottom}$'),
                                 TeX('$\\sigma_{50,top}$'),
-                                TeX('$\\sigma_{\\mathrm{PAR}\\,1%}$')))+
-  geom_hline( yintercept = 14.5)
+                                TeX('$\\sigma_{\\mathrm{PAR}\\,1%}$')))
 
 ## How to maintain all data even those out of axis limits : https://stackoverflow.com/questions/25685185/limit-ggplot2-axes-without-removing-data-outside-limits-zoom
 
@@ -525,47 +535,39 @@ ggplot(tmp_sig, aes(x=month, fill=variable, color=variable)) +
 
 #relative light
 #tmp_iso1 <- subset(tmp_fitco, select = c('month','ISOMLD','ISOMAX','ISOlow','ISO90B','ISO90T','ISO_iso1' ,'dcm_or_not','year','shape'))
-tmp_iso1 <- subset(tmp_fitco, select = c('month','ISOMAX','ISOlow','ISO90B','ISO90T','dcm_or_not','year','shape'))
+tmp_iso1 <- subset(tmp_fitco, select = c('month','ISOMLD','ISOMAX','ISOlow','ISO90B','ISO90T','ISO_iso1','dcm_or_not','year'))
 
-tmp_iso1$sigmaMAX[tmp_iso1$dcm_or_not==0]<-NA
-tmp_iso1$sigmaMAX[tmp_iso1$Zmax>200]<-NA
+tmp_iso1$ISOMAX[tmp_iso1$dcm_or_not==0]<-NA
+tmp_iso1$ISOMAX[(tmp_iso1$month<3) | (tmp_iso1$month>10)]<-NA
 
-tmp_iso <- melt(tmp_iso1[,-which(colnames(tmp_iso1)=='dcm_or_not')], id.vars=c('month','year','shape'))
-
+tmp_iso <- melt(tmp_iso1[,-which(colnames(tmp_iso1)=='dcm_or_not')], id.vars=c('month','year'))
 
 relative_light <- ggplot(tmp_iso, aes(x=month, fill=variable, color=variable)) +
     geom_smooth(aes(y=value),stat = 'summary',
-#              fun.data = median_hilow,
-#              fun.data = mean_cl_boot,
               fun.args = list(conf.int = 0.95), alpha=0.5)+
   geom_boxplot(aes(y=value, group=interaction(month,variable)), alpha=0.2, notch = TRUE)+
         scale_x_continuous(NULL, labels = month.abb, breaks = seq(1,12)) +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
-  #scale_y_continuous(trans = 'log10') + ylab('[microMoleQuanta/m^2/sec]') +
-  ylab('% of Incoming PAR') + theme_bw()  + scale_y_continuous(trans = 'log10') +
-      # scale_color_brewer(aesthetics = c("colour", "fill"),type = qual ,palette=MyPal,
-      #                  name="ISO Horizons", 
-      #                  labels=list(#TeX('$\\ISO_{MLD}$'),
-      #                           TeX('$\\ISO_{DCM}$'),
-      #                           TeX('$\\ISO_{low}$'),
-      #                           TeX('$\\ISO_{50,bottom}$'),
-      #                           TeX('$\\ISO_{50,top}$')))#,
-      #                           #TeX('$\\ISO_{\\mathrm{PAR}\\,1%}$')))
-      scale_color_manual(aesthetics = c("colour", "fill"),values = c("#D95F02","#7570B3","#E7298A","#66A61E"), # [1] "#1B9E77" "#D95F02" "#7570B3" "#E7298A" "#66A61E" "#E6AB02" "#A6761D" "#666666"
+theme_bw()+
+  theme(panel.grid.minor.x = element_line(colour = "grey"),
+        panel.grid.major.x = element_line(colour = "white")) +
+  ylab('% of Incoming PAR') +  scale_y_continuous(trans = 'log10') +
+  scale_color_manual(aesthetics = c("colour", "fill"),
+                         values = c("#1B9E77", "#D95F02", "#7570B3", "#E7298A", "#66A61E", "#E6AB02"),
                        name="ISO Horizons", 
-                       labels=list(TeX('$\\ISO_{DCM}$'),
-                                TeX('$\\ISO_{low}$'),
-                                TeX('$\\ISO_{50,bottom}$'),
-                                TeX('$\\ISO_{50,top}$')))
+                       labels=list(TeX('$\\ISO_{MLD}$'),
+                                   TeX('$\\ISO_{DCM}$'),
+                                   TeX('$\\ISO_{low}$'),
+                                   TeX('$\\ISO_{50,bottom}$'),
+                                   TeX('$\\ISO_{50,top}$'),
+                                   TeX('$\\ISO_{1%}$')))
 
 relative_light
 
 #absolute light
-tmp_iso1 <- subset(tmp_fitco, select = c('month','ISOaMAX','ISOalow','ISOa90B','ISOa90T','dcm_or_not','year','shape'))
+tmp_iso1 <- subset(tmp_fitco, select = c('month','ISOaMLD','ISOaMAX','ISOalow','ISOa90B','ISOa90T','dcm_or_not','year','shape'))
 
-tmp_iso1$sigmaMAX[tmp_iso1$dcm_or_not==0]<-NA
-tmp_iso1$sigmaMAX[tmp_iso1$Zmax>200]<-NA
-
+tmp_iso1$ISOaMAX[tmp_iso1$dcm_or_not==0]<-NA
+tmp_iso1$ISOaMAX[(tmp_iso1$month<3) | (tmp_iso1$month>10)]<-NA
 tmp_iso <- melt(tmp_iso1[,-which(colnames(tmp_iso1)=='dcm_or_not')], id.vars=c('month','year','shape'))
 
 
@@ -576,18 +578,16 @@ absolute_light <- ggplot(tmp_iso, aes(x=month, fill=variable, color=variable)) +
               fun.args = list(conf.int = 0.95), alpha=0.5)+
   geom_boxplot(aes(y=value, group=interaction(month,variable)), alpha=0.2, notch = TRUE)+
         scale_x_continuous(NULL, labels = month.abb, breaks = seq(1,12)) +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
-  scale_y_continuous(trans = 'log10') + ylab('[microMoleQuanta/m^2/sec]') + theme_bw()+
-  #ylab('% of Incoming PAR') + theme_bw()  + scale_y_continuous(trans = 'log10') +
-      # scale_color_brewer(aesthetics = c("colour", "fill"),type = qual ,palette=MyPal,
-      #                  name="ISO Horizons", 
-      #                  labels=list(TeX('$\\ISO_{DCM}$'),
-      #                           TeX('$\\ISO_{low}$'),
-      #                           TeX('$\\ISO_{50,bottom}$'),
-      #                           TeX('$\\ISO_{50,top}$')))
-    scale_color_manual(aesthetics = c("colour", "fill"),values = c("#D95F02","#7570B3","#E7298A","#66A61E"), # [1] "#1B9E77" "#D95F02" "#7570B3" "#E7298A" "#66A61E" "#E6AB02" "#A6761D" "#666666"
+  theme_bw()+
+  theme(panel.grid.minor.x = element_line(colour = "grey"),
+        panel.grid.major.x = element_line(colour = "white")) +
+  scale_y_continuous(trans = 'log10') +
+  ylab(TeX('$\\mu molQuanta\\,m^{-2}\\,s^{-1}]$')) +
+  scale_color_manual(aesthetics = c("colour", "fill"),
+                     values = c("#1B9E77", "#D95F02", "#7570B3", "#E7298A", "#66A61E"),
                        name="ISO Horizons", 
-                       labels=list(TeX('$\\ISO_{DCM}$'),
+                       labels=list(TeX('$\\ISO_{MLD}$'),
+                                   TeX('$\\ISO_{DCM}$'),
                                 TeX('$\\ISO_{low}$'),
                                 TeX('$\\ISO_{50,bottom}$'),
                                 TeX('$\\ISO_{50,top}$')))
@@ -601,7 +601,7 @@ absolute_light
 
 
 #grid.arrange(relative_light + theme(legend.position="none"), absolute_light, nrow = 2)
-grid.arrange(relative_light, absolute_light, nrow = 2)
+#grid.arrange(relative_light, absolute_light, nrow = 2)
 ```
 
 ## Vertical distribution of the CHL content
