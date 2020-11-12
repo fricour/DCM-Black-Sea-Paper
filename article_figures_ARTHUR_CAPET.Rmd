@@ -348,13 +348,13 @@ integrated_diags <- ddply(complete_tmp2, .(juld,platform), summarize,
                             ISODEMI      = try_default(approx(x=depth, y=relative_light, xout=unique(Zdemi), rule=2)$y,NA, quiet = FALSE),
                             ISO_iso1     = try_default(approx(x=depth, y=relative_light, xout=unique(Ziso1b), rule=2)$y,NA, quiet = FALSE),
                           # Add ABSOLUTE Light levels
-                            ISOalow       = try_default(approx(x=depth, y=light_absolute, xout=ZLow, rule=2)$y,NA, quiet = FALSE),
-                            ISOa90B       = try_default(approx(x=depth, y=light_absolute, xout=Z90B, rule=2)$y,NA, quiet = FALSE),
-                            ISOa90T       = try_default(approx(x=depth, y=light_absolute, xout=Z90T, rule=2)$y,NA, quiet = FALSE),
-                            ISOaMLD       = try_default(approx(x=depth, y=light_absolute, xout=unique(MLD), rule=2)$y,NA, quiet = FALSE),
-                            ISOaMAX       = try_default(approx(x=depth, y=light_absolute, xout=unique(Zmax), rule=2)$y,NA, quiet = FALSE),
-                            ISOaDEMI      = try_default(approx(x=depth, y=light_absolute, xout=unique(Zdemi), rule=2)$y,NA, quiet = FALSE),
-                            ISOa_iso1     = try_default(approx(x=depth, y=light_absolute, xout=unique(Ziso1b), rule=2)$y,NA, quiet = FALSE)
+                            ISOalow       = try_default(approx(x=depth, y=absolute_light, xout=ZLow, rule=2)$y,NA, quiet = FALSE),
+                            ISOa90B       = try_default(approx(x=depth, y=absolute_light, xout=Z90B, rule=2)$y,NA, quiet = FALSE),
+                            ISOa90T       = try_default(approx(x=depth, y=absolute_light, xout=Z90T, rule=2)$y,NA, quiet = FALSE),
+                            ISOaMLD       = try_default(approx(x=depth, y=absolute_light, xout=unique(MLD), rule=2)$y,NA, quiet = FALSE),
+                            ISOaMAX       = try_default(approx(x=depth, y=absolute_light, xout=unique(Zmax), rule=2)$y,NA, quiet = FALSE),
+                            ISOaDEMI      = try_default(approx(x=depth, y=absolute_light, xout=unique(Zdemi), rule=2)$y,NA, quiet = FALSE),
+                            ISOa_iso1     = try_default(approx(x=depth, y=absolute_light, xout=unique(Ziso1b), rule=2)$y,NA, quiet = FALSE)
                           )
 }
 ```
@@ -533,8 +533,6 @@ ggplot(tmp_sig, aes(x=month, fill=variable, color=variable)) +
 
 ```{r Review Fig light}
 
-#relative light
-#tmp_iso1 <- subset(tmp_fitco, select = c('month','ISOMLD','ISOMAX','ISOlow','ISO90B','ISO90T','ISO_iso1' ,'dcm_or_not','year','shape'))
 tmp_iso1 <- subset(tmp_fitco, select = c('month','ISOMLD','ISOMAX','ISOlow','ISO90B','ISO90T','ISO_iso1','dcm_or_not','year'))
 
 tmp_iso1$ISOMAX[tmp_iso1$dcm_or_not==0]<-NA
@@ -544,6 +542,7 @@ tmp_iso <- melt(tmp_iso1[,-which(colnames(tmp_iso1)=='dcm_or_not')], id.vars=c('
 
 relative_light <- ggplot(tmp_iso, aes(x=month, fill=variable, color=variable)) +
     geom_smooth(aes(y=value),stat = 'summary',
+                              fun.data = mean_cl_boot,
               fun.args = list(conf.int = 0.95), alpha=0.5)+
   geom_boxplot(aes(y=value, group=interaction(month,variable)), alpha=0.2, notch = TRUE)+
         scale_x_continuous(NULL, labels = month.abb, breaks = seq(1,12)) +
@@ -574,7 +573,7 @@ tmp_iso <- melt(tmp_iso1[,-which(colnames(tmp_iso1)=='dcm_or_not')], id.vars=c('
 absolute_light <- ggplot(tmp_iso, aes(x=month, fill=variable, color=variable)) +
     geom_smooth(aes(y=value),stat = 'summary',
 #              fun.data = median_hilow,
-#              fun.data = mean_cl_boot,
+              fun.data = mean_cl_boot,
               fun.args = list(conf.int = 0.95), alpha=0.5)+
   geom_boxplot(aes(y=value, group=interaction(month,variable)), alpha=0.2, notch = TRUE)+
         scale_x_continuous(NULL, labels = month.abb, breaks = seq(1,12)) +
