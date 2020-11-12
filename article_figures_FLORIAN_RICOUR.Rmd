@@ -351,15 +351,18 @@ df <- df[!duplicated(df$depth),]
 
 deployment <- ggplot(data, aes(x = fluo, y = depth, colour = "ROESLER + FDOM + NPQ"), lwd = 1.5) + geom_path(lwd = 1.5) +
   scale_y_reverse() + geom_path(data = data, aes(x = raw_roesler_fdom, y = depth, colour = "ROESLER + FDOM"), lwd = 1.5) +
-  xlab(expression(Chlorophyll~a~(mg/m^3)))+ ylab("Depth [m]") +
+  #xlab(expression(Chlorophyll~a~(mg/m^3)))+ 
+  ylab("Depth [m]") +
   geom_hline(yintercept = data_info$depthmin[1], color = "black", lty = 2) +
   annotate("text", x = .8, y = data_info$depthmin[1]-20, label = "CHLA MINIMUM") +
   geom_path(data = data, aes(x = raw_fluo, y = depth, colour = "None"), lwd = 1.5) + 
   geom_path(data = data, aes(x = raw_roesler, y = depth, colour = "ROESLER"), lwd = 1.5) + 
   geom_point(data = df, aes(x = cdom/10, y = depth), colour = "black", size = .5) + 
-  geom_point(data=hplc, aes(y = depth_hplc, x = chla_hplc), colour = "red", size = 2, shape = 15)  + 
+  #geom_point(data=hplc, aes(y = depth_hplc, x = chla_hplc), colour = "red", size = 2, shape = 15)  + 
   scale_color_discrete(name = "Correction") +
-  theme_bw() + theme(legend.position = "none")
+  theme_bw() + theme(legend.position = "none") +
+  # add a secondary axis
+  scale_x_continuous(expression(Chlorophyll~a~(mg/m^3)), sec.axis = dup_axis(name = "CDOM (ppb)", trans = ~ .*10))
 
 zoom_deployment <- ggplot(data, aes(x = fluo, y = depth, colour = "ROESLER + FDOM + NPQ")) + geom_path(lwd = 1.5) +
   scale_y_reverse(limits = c(100,0)) + geom_path(data = data, aes(x = raw_roesler_fdom, y = depth, colour = "ROESLER + FDOM"), lwd = 1.5) +
