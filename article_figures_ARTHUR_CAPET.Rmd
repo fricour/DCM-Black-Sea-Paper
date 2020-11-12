@@ -799,14 +799,16 @@ myMap_stamen <- get_map(location=mycoord,source="stamen",maptype = "watercolor",
 tmp_fitco$monthn<-factor(tmp_fitco$month, labels = month.abb[unique(tmp_fitco$month)])
 
 ms<-ggmap(myMap_stamen)
-ms1<-ms+geom_point(data=tmp_fitco, aes(x=lon,y=lat, color=factor(dcm_or_not)))+
+ms1<-ms+geom_point(data=tmp_fitco, aes(x=lon,y=lat, color=factor(dcm_or_not)), alpha=.6)+
   facet_wrap(~monthn, scale="fixed")+
   theme_bw()+
-  scale_color_discrete(name="", labels=c('non-DCM','DCM'))+
+  #scale_color_discrete(name="", labels=c('non-DCM','DCM'))+
+  scale_color_manual(values = c("black", "red"), labels=c('non-DCM','DCM'), name="")+
   theme(legend.position = 'top', legend.box = "horizontal")+
   scale_x_continuous(name='', breaks = c(27,30,33,36,39), limits = c(27,42), expand = expand_scale(add = 0))+
-  scale_y_continuous(name='', breaks = seq(41,47), limits = c(40.7,47), expand = expand_scale(add = 0))
-
+  scale_y_continuous(name='', breaks = seq(41,47), limits = c(40.7,47), expand = expand_scale(add = 0)) +
+  # for another wrap colour (B/W instead of grey)
+  theme(panel.background=element_rect(fill='white', colour='black'),strip.background=element_rect(fill='white', colour='black'))
 
 ms1
 ```
