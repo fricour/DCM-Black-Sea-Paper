@@ -1,0 +1,1019 @@
+---
+title: "DCM_investigation"
+author: "MAST"
+date: "February 20, 2020"
+output: 
+  github_document:
+    toc : yes
+    #number_sections: yes
+    fig_width : 8
+    fig_height : 6
+    #keep_tex : yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, fig.height=4)
+library(dplyr)
+library(plyr)
+library(grid)
+library(gridExtra)
+library(processx)
+library(lubridate)
+library(plyr)
+library(ggplot2)
+library(latex2exp)
+library(pracma)
+```
+
+```{r data}
+# Load data previously computed
+load(file='./DataPaper.RData')
+
+freshstart <- T
+```
+
+# Evolution of the Black Sea Deep Chlorophyll Maximum
+
+```{r Fig3}
+# compute stats per months
+tmp_fit <- filter(init_fit, year %in% c(2014:2019)) 
+stats_month <- ddply(tmp_fit, ~month, summarize,
+                      profiles = length(unique(juld)))
+
+non_dcm <- filter(tmp_fit, !juld %in% unique(fit$juld))
+dcm <- filter(tmp_fit, juld %in% unique(fit$juld))
+
+dcm$shape <- gsub('GS', 'GS_true', dcm$shape) 
+dcm$shape <- gsub('GE', 'GE_true', dcm$shape)
+dcm[dcm$shape == "G",]$shape <- "G_true"
+
+#put it all back in a single fit dataframe
+tmp_fit <- rbind(non_dcm, dcm)
+
+
+tmp_stu <- ddply(tmp_fit, ~month~shape, summarize,
+                count = length(unique(juld)),
+                count2 = length(unique(juld)))
+
+# continue
+for (i in c(1:12)){
+  tmp_stu[tmp_stu$month == i,]$count <- tmp_stu[tmp_stu$month == i,]$count/stats_month$profiles[i]
+  tmp_stu[tmp_stu$month == i,]$count2 <- stats_month$profiles[i]
+}
+
+# define colours 
+myColors <- c("#13306DFF", "#6B4596FF", "#403891FF", "#042333FF", "#A65C85FF", "#EB8055FF", "#F9B641FF", "#E8FA5BFF")
+names(myColors) <- c("G", "GE", "GS", "S", "O", "G_true", "GS_true", "GE_true") #https://stackoverflow.com/questions/6919025/how-to-assign-colors-to-categorical-variables-in-ggplot2-that-have-stable-mappin
+colScale <- scale_fill_manual(name = "shape",values = myColors)
+
+library(scales)
+# https://askcodez.com/ggplot-remplace-count-avec-un-pourcentage-dans-geom_bar.html
+
+mylabs<-lapply(seq(12), function(i){paste0(month.abb[i],'\n',format(ddply(tmp_fit, ~month, summarize,
+                count = length(unique(juld)))$count[i]))})
+
+ggplot(tmp_stu, aes(x = month, fill = shape, y = count)) +
+  geom_bar(stat='identity') +
+  theme_bw() + 
+  scale_x_continuous(breaks = c(1:12), labels = mylabs,name='') +
+  scale_y_continuous(breaks = c(0,0.25,0.5,0.75,1), labels = scales::percent(c(0,0.25,0.5,0.75,1)),name='') +
+  scale_fill_manual(name = "Best-fitting Form",values = myColors,
+                    labels=list("non-DCM : Sigmoïd",
+                                "non-DCM : Gaussian-Sigmoïd",
+                                "non-DCM : Gaussian-Exponential",
+                                "non-DCM : Gaussian",
+                                "Others",
+                                "DCM : Gaussian-Sigmoïd",
+                                "DCM : Gaussian-Exponential",
+                                "DCM : Gaussian"))
+
+```
+
+# Seasonal Time-Series
+
+```{r Processing, error=FALSE, warning=FALSE, echo=FALSE, message=FALSE, results='hide', include=FALSE, eval=TRUE}
+
+# Prepare data for Temporal Series
+if (freshstart){
+  
+tmp <- init_profiles
+tmp_fit <- init_fit
+
+## MODIF to avoid ordering errors ##
+#tmp_fit$dcm_or_not <- NA
+fit$dcm_or_not <- 1
+tmp_fit <- merge(tmp_fit, fit[,c('juld','platform','dcm_or_not')],by=c('juld','platform'), all = TRUE)
+tmp_fit$dcm_or_not[is.na(tmp_fit$dcm_or_not)]<-0
+#tmp_fit$dcm_or_not[which(tmp_fit$juld %in% fit$juld)] <- "DCM"
+####
+
+
+# Add scalr diagnostics to the complete dataframe for vertical integration
+complete_tmp <- merge(tmp,tmp_fit[,c('juld','platform','MLD','Zmax','Zdemi')], by=c('juld','platform'))
+
+optical_depth <- c(6,6,6,7.5,7,7,7.5,9,8,6.5,6,6) #1/k = optical depth ==> we have a value for each month
+
+}
+```
+
+
+```{r Functions, error=FALSE, warning=FALSE, echo=FALSE, message=FALSE, results='hide', include=FALSE, eval=TRUE}
+
+############
+# Functions to apply to profiles
+############
+
+content_z<-function(z, depth, fluo,total){
+  print(paste0('my total is', as.character(total)))
+  ztot <- sum(approx(x=depth, y=fluo,xout = seq(0,z), rule = 2)$y, na.rm=T)
+  print(paste0('my local total for Z:',as.character(z),'is', as.character(ztot)))
+  diff <- 0.9*total-ztot
+  return (diff)
+}
+
+# Simple function to find the lower boundary of core X% CHL content.
+depth90B<-function(depth, fluo, total,p=.9){
+#  print(total)
+  # return the depth over which integration should be doe to capture 95 % of the total CHL content.
+  loctot<-0
+  z90 <-14
+  while(loctot<p*total){
+      z90=z90+1
+      loctot = sum(approx(x=depth, y=fluo,xout = seq(0,z90), rule = 2)$y, na.rm=T)
+  }
+  return(z90)
+}
+
+depth90T<-function(depth, fluo, total,p=.9){
+#  print(total)
+  # return the depth over which integration should be doe to capture 95 % of the total CHL content.
+  loctot<-0
+  z90 <-100
+  while(loctot<p*total){
+      z90=z90-1
+      loctot = sum(approx(x=depth, y=fluo,xout = seq(z90,200), rule = 2)$y, na.rm=T)
+  }
+  return(z90)
+}
+
+
+#########
+# Light #
+#########
+
+grad_att <- function(PRESr,k,PAR0){
+  PAR<-PRESr*0
+  kint<-(c(k[1],k)+c(k,k[length(k)]))/2
+  PAR[1]<-PAR0*exp(-kint[1]*PRESr[1])
+  for (i in 2:length(PAR)){
+    PAR[i]<-PAR[i-1]*exp(-((kint[i]+kint[i])/2    )*(PRESr[i]-PRESr[i-1]))
+  }
+  return(PAR)
+}
+
+Att_2band <- function(PRES,PAR0,ks0,kl0,depthP0=0) {
+  ##  "CHL_2BANDS" ##
+  # CHLA specific attenuation + two bandwidths
+  if (depthP0 !=0){
+    PAR0  = PAR0/(parts*exp(-ks0*depthP0)+(1-parts)*exp(-kl0*depthP0)  ) 
+  }
+  PAR0s <- PAR0*parts
+  PAR0l <- PAR0*(1-parts)
+  ks    <- rep(ks0,length(PRES))
+  kl    <- rep(kl0,length(PRES))
+  PARs  <- grad_att(PRES,ks,PAR0s)
+  PARl  <- grad_att(PRES,kl,PAR0l)
+  PAR<-PARs+PARl
+  return(PAR)
+}
+
+p2b_start = c(PAR0 = 1500 ,  ks0 = 0.04 , kl0=0.01) 
+p2b_lower = c(PAR0 = 0    ,  ks0 = 0    , kl0=0    )
+p2b_upper = c(PAR0 = 2500 ,  ks0 = 3   , kl0=10)
+
+Out_Default <- data.frame("PAR0"=NA,
+                          "ks0"=NA,
+                          "kl0"=NA)
+parts = 0.37
+DefOut_isoPAR <-NA
+
+
+## Filter function to select eligible profiles
+#countcheck<-1
+FilterForPAR<-function(depth,PAR){
+ # countcheck<<-countcheck+1
+  # if (countcheck<10){
+  #   print(depth)
+  #   print(PAR)
+  #   print(sum(is.na(PAR))>length(PAR)/2)
+  #   readline(prompt="Press [enter] to continue")
+  # }
+  return (sum(is.na(PAR))<length(PAR)/2)
+}
+
+## First attempt derives PAR @ 1m from interpolation and look for 1/100 of this value
+isoPAR <- function(depth, PAR){
+  require(pracma)
+  # Intended for Casted DF
+  if (FilterForPAR(depth,PAR)){
+    out    <- try_default({
+    d <- depth[which( !is.na(depth) & PAR>0.1  )]
+    P <- PAR[which( !is.na(depth) & PAR>0.1  )]
+             p1 <-interp1(d,P, 1)      
+      z100 <- interp1(P,d, p1/100) 
+      return(z100)},
+      DefOut_isoPAR)
+  }else{
+    out <- DefOut_isoPAR
+  }
+  return(out)
+}
+
+## Second option 
+isoPARb <- function(depth, PAR){
+  require(pracma)
+  # Intended for Casted DF
+  if (FilterForPAR(depth,PAR)){
+    out    <- try_default({
+    d <- depth[which( !is.na(depth) & PAR>0.1  )]
+    P <- PAR[which( !is.na(depth) & PAR>0.1  )]
+    m <<-nls(PAR ~ Att_2band(depth,PAR0,ks0,kl0),
+           data = data.frame(depth=depth, PAR=PAR),
+           start = p2b_start, 
+           lower = p2b_lower,
+           upper = p2b_upper,
+           algorithm = "port", 
+           control = list(maxiter= 1000)
+           )
+    mcoef  <<- coef(m)
+    PAR0   <-mcoef[1]
+    PARcon <- predict(m,data.frame(depth=seq(1,200)))    
+    z100 <- interp1(PARcon,seq(1,200), PAR0/100) 
+      return(c(z100,PAR0))},
+      DefOut_isoPAR)
+  }else{
+    out <- DefOut_isoPAR
+  }
+  return(out)
+}
+
+```
+
+
+```{r light integrated diags, error=FALSE, warning=FALSE, echo=FALSE, message=FALSE, results='hide', include=FALSE, eval=TRUE}
+
+# To compute light diagnostics, ie. iso 1% of surface PAR. 
+## Two methods are operational. (see functions isoPAR and isoPARb)
+## At the moment, the second one allows more values, as the first one is not working when no light data are available near-surface.
+
+if (freshstart){
+integrated_diags_par <- ddply(initPAR, .(juld,platform), summarize,
+                          Ziso1 = isoPAR(depth = depth , PAR = par),
+                          Ziso1b = isoPARb(depth = depth , PAR = par)[1],
+                          PAR0  = isoPARb(depth = depth , PAR = par)[2]
+                          )
+}
+
+```
+
+
+```{r}
+# Add scalr diagnostics to the complete dataframe for vertical integration
+if (freshstart){
+complete_tmp2 <- merge(complete_tmp,integrated_diags_par, by=c('juld','platform'), all.x = TRUE)
+}
+```
+
+
+```{r add light data to full data}
+complete_tmp2 <- ddply(complete_tmp2,c('juld','platform'), function(dsub){
+  tmp <- subset(initPAR, (platform==dsub$platform[1]) & (juld==dsub$juld[1]) )
+  if(nrow(tmp) == 0){
+    absolute_light <- rep(NA, nrow(dsub))
+    relative_light <- absolute_light
+  }else{
+    absolute_light <- approx(tmp$depth, tmp$par, dsub$depth)$y
+    relative_light <- (absolute_light/dsub$PAR0)*100 # could also put max(tmp2$par) car surface = max_par, therefore no ordering issue will appear (but tmp2$par[1] is good) 
+  }
+  dsub$absolute_light<-absolute_light
+  dsub$relative_light<-relative_light
+  return(dsub)
+})
+
+```
+
+
+
+
+```{r IntegratedDiagsdf, error=FALSE, warning=FALSE, echo=FALSE, message=FALSE, results='hide', include=FALSE, eval=TRUE}
+# TOTAL CHL, integration using first linear interpolation on a regular grid, then sum.
+if (freshstart){
+integrated_diags <- ddply(complete_tmp2, .(juld,platform), summarize,
+                          # TOTAL CHL, integration using first linear interpolation on a regular grid, then sum.
+                            total_chla    = sum(approx(x=depth, y=fluo,xout = seq(0,200), rule = 2)$y, na.rm=T),
+                          # chl content relative to MLD depth
+                            DoMLD_chla    = sum(approx(x=depth, y=fluo,xout = seq(0,200), rule = 2)$y[round(unique(MLD)):200]),
+                            UpMLD_chla    = sum(approx(x=depth, y=fluo,xout = seq(0,200), rule = 2)$y[  0:round(unique(MLD))]),
+                            RaMLD_chla    = UpMLD_chla/total_chla*100,
+                          # Visible part based on monthly optical depth
+                            optic_depth   = optical_depth[unique(month)]*3,
+                            visible_chla  = sum(approx(x=depth, y=fluo,xout = seq(0, optic_depth), rule = 2)$y, na.rm=T), 
+                            visible_ratio = visible_chla/total_chla*100, 
+                          # Content around DCM 
+                            DCMcontent    = try_default(
+                              sum(approx(x=depth, y=fluo,xout = seq(round(unique(Zmax)-10), round(unique(Zmax)+10)), rule = 2)$y, na.rm=T),
+                              NA, quiet = FALSE), 
+                            DCMratio      = DCMcontent/total_chla*100 ,
+                          # sigma @ Zdemi 
+                          # by definition, sigma @ MLD follows sig surface by a fixed amont. 
+                            #sigmaMLD      = sigma[which.min(depth)],
+                            ZLow           = min(depth[fluo<0.01]),
+                          #  Z90           = depth90b(depth = depth , fluo = fluo,total = total_chla),
+                            Z90B           = depth90B(depth = depth , fluo = fluo,total = total_chla, p=0.75),
+                            Z90T           = depth90T(depth = depth , fluo = fluo,total = total_chla, p=0.75),
+                            sigmalow       = try_default(approx(x=depth, y=sigma, xout=ZLow, rule=2)$y,NA, quiet = FALSE),
+                            sigma90B       = try_default(approx(x=depth, y=sigma, xout=Z90B, rule=2)$y,NA, quiet = FALSE),
+                            sigma90T       = try_default(approx(x=depth, y=sigma, xout=Z90T, rule=2)$y,NA, quiet = FALSE),
+                            sigmaMLD       = min(sigma, na.rm = TRUE),#[which.min(depth)],  !! THIS IS NOT CORRECT !!
+                            sigmaMAX       = try_default(approx(x=depth, y=sigma, xout=unique(Zmax), rule=2)$y,NA, quiet = FALSE),
+                            sigmaDEMI      = try_default(approx(x=depth, y=sigma, xout=unique(Zdemi), rule=2)$y,NA, quiet = FALSE), 
+                            sigmaiso1      = try_default(approx(x=depth, y=sigma, xout=unique(Ziso1b), rule=2)$y,NA, quiet = FALSE),
+                          ### 
+                          # Adding diags for LIGHT Horizon here
+                            ISOlow       = try_default(approx(x=depth, y=relative_light, xout=ZLow, rule=2)$y,NA, quiet = FALSE),
+                            ISO90B       = try_default(approx(x=depth, y=relative_light, xout=Z90B, rule=2)$y,NA, quiet = FALSE),
+                            ISO90T       = try_default(approx(x=depth, y=relative_light, xout=Z90T, rule=2)$y,NA, quiet = FALSE),
+                            ISOMLD       = try_default(approx(x=depth, y=relative_light, xout=unique(MLD), rule=2)$y,NA, quiet = FALSE),
+                            ISOMAX       = try_default(approx(x=depth, y=relative_light, xout=unique(Zmax), rule=2)$y,NA, quiet = FALSE),
+                            ISODEMI      = try_default(approx(x=depth, y=relative_light, xout=unique(Zdemi), rule=2)$y,NA, quiet = FALSE),
+                            ISO_iso1     = try_default(approx(x=depth, y=relative_light, xout=unique(Ziso1b), rule=2)$y,NA, quiet = FALSE),
+                          # Add ABSOLUTE Light levels
+                            ISOalow       = try_default(approx(x=depth, y=absolute_light, xout=ZLow, rule=2)$y,NA, quiet = FALSE),
+                            ISOa90B       = try_default(approx(x=depth, y=absolute_light, xout=Z90B, rule=2)$y,NA, quiet = FALSE),
+                            ISOa90T       = try_default(approx(x=depth, y=absolute_light, xout=Z90T, rule=2)$y,NA, quiet = FALSE),
+                            ISOaMLD       = try_default(approx(x=depth, y=absolute_light, xout=unique(MLD), rule=2)$y,NA, quiet = FALSE),
+                            ISOaMAX       = try_default(approx(x=depth, y=absolute_light, xout=unique(Zmax), rule=2)$y,NA, quiet = FALSE),
+                            ISOaDEMI      = try_default(approx(x=depth, y=absolute_light, xout=unique(Zdemi), rule=2)$y,NA, quiet = FALSE),
+                            ISOa_iso1     = try_default(approx(x=depth, y=absolute_light, xout=unique(Ziso1b), rule=2)$y,NA, quiet = FALSE)
+                          )
+}
+```
+
+
+```{r IntegratedDiagsMerge, error=FALSE, warning=FALSE, echo=FALSE, message=FALSE, results='hide', include=FALSE, eval=TRUE}
+if (freshstart){
+tmp_fitc<-merge(tmp_fit ,integrated_diags, by = c('juld','platform'))
+
+tmp_fitc<-merge(tmp_fitc ,integrated_diags_par, by = c('juld','platform'), all.x = TRUE)
+
+tmp_fitc   <- tmp_fitc[tmp_fit$year %in% c(2014:2019),]
+
+tmp_my <- ddply(tmp_fitc, .(month,year), summarize,
+                nprof = length(dcm_or_not),
+                percentage_dcm =  sum(dcm_or_not)/length(dcm_or_not)*100
+                ) 
+}
+```
+
+
+```{r}
+tmp_fitco<- tmp_fitc
+tmp_fitco$dcm_or_not[tmp_fitco$shape=="O"]<-1
+tmp_fitc[which((tmp_fitc$month<4)|(tmp_fitc$month>10)),c('Zmax','sigmaMAX','DCMratio')]<-NA
+tmp_fitco[which((tmp_fitco$month<4)|(tmp_fitco$month>10)),c('Zmax','sigmaMAX','DCMratio','chla_dcm')]<-NA
+```
+
+
+# Back Scattering Validation of the DCM 
+
+```{r}
+dbdf<- subset(complete_tmp2, select = c('juld','platform','depth','sigma','fluo','bbp','Zmax','month','lon'))
+dbdf<-merge(dbdf, subset(tmp_fitc,select = c('juld','platform','dcm_or_not','chla_dcm','sigmaMAX','sigmaMLD','MLD')), by = c('juld','platform'))
+dbdf<- subset(dbdf,dcm_or_not==1)
+
+dbdf<-subset(dbdf, (month>2)&(month<11))
+dbdf<-subset(dbdf, !is.nan(Zmax))
+
+dbdf$fluo_norm <- dbdf$fluo/dbdf$chla_dcm
+
+
+dbdf$sigma_norm <- (dbdf$sigma-dbdf$sigmaMLD)/(dbdf$sigmaMAX-dbdf$sigmaMLD+.00000001)
+dbdf$depth_norm <- (dbdf$depth-dbdf$MLD)/(dbdf$Zmax-dbdf$MLD+.00000001)
+#dbdf$depth_norm_layers<-factor(dbdf$depth_norm_layers,levels=rev(levels(dbdf$depth_norm_layers)))
+
+dbdf<-ddply(dbdf,.(platform, juld),mutate,
+            bbpmax= mean(bbp[depth_norm<1.2], na.rm=TRUE),
+            bbp_norm1 = bbp/bbpmax,
+            bbp_DCM = approx(depth,bbp,Zmax)$y,
+            bbp_norm2 = bbp/bbp_DCM)
+
+dbdf$ration <- dbdf$fluo_norm/ dbdf$bbp_norm1 
+#dbdf$ratio  <- dbdf$fluo / dbdf$bbp
+
+
+dbdf$sigma_norm_layers <- cut(dbdf$sigma_norm,seq(0.05,3.05,.1))
+dbdf$depth_norm_layers <- cut(dbdf$depth_norm,seq(0.05,3.05,.1))
+```
+
+
+```{r}
+blbl<-subset(dbdf, select=c("sigma_norm_layers","fluo_norm", "depth_norm_layers",
+                            "depth_norm","sigma_norm","bbp_norm1","month",'lon',"ration"))
+require(reshape2)
+
+
+
+blbl<-melt(blbl, id.vars=.(sigma_norm_layers,depth_norm_layers,month,depth_norm,sigma_norm,lon))
+
+blbl$monthn<-factor(blbl$month, labels = month.abb[unique(blbl$month)])
+
+blbl$variable<-as.character(blbl$variable)
+blbl$variable[which(blbl$variable=="fluo_norm")]<-"Norm. Chla"
+blbl$variable[which(blbl$variable=="bbp_norm1")]<-"Norm. Bbp"
+blbl$variable[which(blbl$variable=="ration")]<-"N. Chla / N. bbp"
+blbl$variable<-factor(blbl$variable, levels=c("Norm. Chla","Norm. Bbp","N. Chla / N. bbp"))
+
+
+bigplot1<-ggplot(subset(blbl, month %in% c(3,4,5,6)), aes(x=depth_norm, y=value))+
+      geom_boxplot(aes(group=depth_norm_layers), outlier.size=0.5)+
+  theme_bw()+coord_flip(xlim = c(2,0), ylim=c(0,2))+
+  facet_grid(monthn~variable, scale="free")+
+  geom_vline(xintercept  = 1)+xlab('Depth - norm.')+ylab('')
+
+bigplot2<-ggplot(subset(blbl, month %in% c(7,8,9,10)), aes(x=depth_norm, y=value))+
+      geom_boxplot(aes(group=depth_norm_layers), outlier.size=0.5)+
+  theme_bw()+coord_flip(xlim = c(2,0), ylim=c(0,2))+
+  facet_grid(monthn~variable, scale="free")+
+  geom_vline(xintercept  = 1)+xlab('Depth - norm.')+ylab('')
+```
+
+
+```{r Fig10, fig.width=8, fig.height=6}
+grid.arrange(bigplot1+scale_x_reverse(),
+             bigplot2+scale_x_reverse(), nrow=1)
+```
+
+
+
+# Depth horizons
+
+```{r Fig5}
+require(reshape2)
+MyPal<-'Dark2'
+
+# To remove/add line in the plot below, simply remove/add a variable in the list. (e.g. add 'Zdemi',)
+tmp_zmax1 <- subset(tmp_fitco, select = c('month','year','dcm_or_not','shape','MLD','Zmax','ZLow','Z90B','Z90T','Ziso1b'))
+
+tmp_zmax1$Zmax[tmp_zmax1$dcm_or_not==0]<-NA
+tmp_zmax1$Zmax[tmp_zmax1$Zmax>200]<-NA
+tmp_zmax1$Zdemi[tmp_zmax1$shape %in% c("O","GE","G")]<-NA
+
+tmp_zmax <- melt(tmp_zmax1[,-which(colnames(tmp_zmax1)=='dcm_or_not')], id.vars=c('month','year','shape'))
+
+depthplot <- ggplot(tmp_zmax, aes(x=month)) +
+    geom_smooth(aes(y=value, fill=variable, color=variable),stat = 'summary',
+#              fun.data = median_hilow,
+             fun.data = mean_cl_boot,
+              fun.args = list(conf.int = 0.95), alpha=0.5)+
+  geom_boxplot(aes(y=value, fill=variable, color=variable, group=interaction(month,variable)), alpha=0.2, notch = TRUE)+
+        scale_x_continuous(NULL, labels = month.abb, breaks = seq(1,12), limits = c(0.5,12.5), expand = c(0, 0)) +
+          scale_y_reverse(breaks = seq(100,0,-10), minor_breaks = NULL) +
+  ylab('[m]')+theme_bw()+coord_cartesian(ylim=c(100,0))+
+    theme(panel.grid.minor.x = element_line(colour = "grey"),
+        panel.grid.major.x = element_line(colour = "white")) +
+  #scale_y_reverse()+
+    scale_color_brewer(aesthetics = c("colour", "fill"),
+                       type = qual ,
+                       palette=MyPal,
+                       name="Depth Horizons", 
+                       labels=list(TeX('$z_{MLD}$'),
+                                TeX('$z_{DCM}$'),
+                                TeX('$z_{low}$'),
+                                TeX('$z_{50,bottom}$'),
+                                TeX('$z_{50,top}$'),
+                                TeX('$z_{\\mathrm{PAR}\\,1%}$')))
+
+depthplot
+```
+
+## Density Horizons
+
+```{r Fig6}
+tmp_sig1 <- subset(tmp_fitco, select = c('month','sigmaMLD','sigmaMAX','sigmalow','sigma90B','sigma90T','sigmaiso1' ,'dcm_or_not','year','shape'))
+
+tmp_sig1$ISOMAX[tmp_sig1$dcm_or_not==0]<-NA
+tmp_sig1$ISOMAX[tmp_sig1$Zmax>200]<-NA
+
+tmp_sig <- melt(tmp_sig1[,-which(colnames(tmp_sig1)=='dcm_or_not')], id.vars=c('month','year','shape'))
+
+
+densplot <- ggplot(tmp_sig, aes(x=month)) +
+    geom_smooth(aes(y=value, fill=variable, color=variable),stat = 'summary',
+#              fun.data = median_hilow,
+              fun.data = mean_cl_boot,
+              fun.args = list(conf.int = 0.95), alpha=0.5)+
+  geom_boxplot(aes(y=value, fill=variable, color=variable,group=interaction(month,variable)), alpha=0.2, notch = TRUE)+
+        scale_x_continuous(NULL, labels = month.abb, breaks = seq(1,12), expand = c(1, 1)*0.01) +
+  theme_bw()+
+  theme(panel.grid.minor.x = element_line(colour = "grey"),
+        panel.grid.major.x = element_line(colour = "white")) +
+  ylab(TeX('$\\left[kg\\,m^{-3}\\right]$$'))+coord_cartesian(ylim=c(16,10))+scale_y_reverse()+
+      scale_color_brewer(aesthetics = c("colour", "fill"),type = qual ,palette=MyPal,
+                       name="Density Horizons", 
+                       labels=list(TeX('$\\sigma_{MLD}$'),
+                                TeX('$\\sigma_{DCM}$'),
+                                TeX('$\\sigma_{low}$'),
+                                TeX('$\\sigma_{50,bottom}$'),
+                                TeX('$\\sigma_{50,top}$'),
+                                TeX('$\\sigma_{\\mathrm{PAR}\\,1%}$')))
+
+## How to maintain all data even those out of axis limits : https://stackoverflow.com/questions/25685185/limit-ggplot2-axes-without-removing-data-outside-limits-zoom
+
+densplot
+
+```
+
+## Relative & Absolute light Horizons
+
+```{r Review Fig light}
+tmp_iso1 <- subset(tmp_fitco, select = c('month','ISOMLD','ISOMAX','ISOlow','ISO90B','ISO90T','ISO_iso1','dcm_or_not','year'))
+
+tmp_iso1$ISOMAX[tmp_iso1$dcm_or_not==0]<-NA
+tmp_iso1$ISOMAX[(tmp_iso1$month<3) | (tmp_iso1$month>10)]<-NA
+
+tmp_iso <- melt(tmp_iso1[,-which(colnames(tmp_iso1)=='dcm_or_not')], id.vars=c('month','year'))
+
+relative_light <- ggplot(tmp_iso, aes(x=month, fill=variable, color=variable)) +
+    geom_smooth(aes(y=value),stat = 'summary',
+                              fun.data = mean_cl_boot,
+              fun.args = list(conf.int = 0.95), alpha=0.5)+
+  geom_boxplot(aes(y=value, group=interaction(month,variable)), alpha=0.2, notch = TRUE)+
+        scale_x_continuous(NULL, labels = month.abb, breaks = seq(1,12), expand = c(1, 1)*0.01) +
+theme_bw()+
+  theme(panel.grid.minor.x = element_line(colour = "grey"),
+        panel.grid.major.x = element_line(colour = "white")) +
+  ylab('% of Incoming PAR') +  scale_y_continuous(trans = 'log10') +
+  scale_color_manual(aesthetics = c("colour", "fill"),
+                         values = c("#1B9E77", "#D95F02", "#7570B3", "#E7298A", "#66A61E", "#E6AB02"),
+                       name="ISO Horizons", 
+                       labels=list(TeX('$\\ISO_{MLD}$'),
+                                   TeX('$\\ISO_{DCM}$'),
+                                   TeX('$\\ISO_{low}$'),
+                                   TeX('$\\ISO_{50,bottom}$'),
+                                   TeX('$\\ISO_{50,top}$'),
+                                   TeX('$\\ISO_{1%}$')))
+
+relative_light
+```
+
+
+```{r Fig7}
+#absolute light
+tmp_iso1 <- subset(tmp_fitco, select = c('month','ISOaMLD','ISOaMAX','ISOalow','ISOa90B','ISOa90T','dcm_or_not','year','shape'))
+
+tmp_iso1$ISOaMAX[tmp_iso1$dcm_or_not==0]<-NA
+tmp_iso1$ISOaMAX[(tmp_iso1$month<3) | (tmp_iso1$month>10)]<-NA
+tmp_iso <- melt(tmp_iso1[,-which(colnames(tmp_iso1)=='dcm_or_not')], id.vars=c('month','year','shape'))
+
+
+absolute_light <- ggplot(tmp_iso, aes(x=month)) +
+    geom_smooth(aes(y=value, fill=variable, color=variable),stat = 'summary',
+#              fun.data = median_hilow,
+              fun.data = mean_cl_boot,
+              fun.args = list(conf.int = 0.95), alpha=0.5)+
+  geom_boxplot(aes(y=value, fill=variable, color=variable, group=interaction(month,variable)), alpha=0.2, notch = TRUE)+
+        scale_x_continuous(NULL, labels = month.abb, breaks = seq(1,12), expand = c(1, 1)*0.01) +
+  theme_bw()+
+  theme(panel.grid.minor.x = element_line(colour = "grey"),
+        panel.grid.major.x = element_line(colour = "white")) +
+  scale_y_continuous(trans = 'log10') +
+  ylab(TeX('$\\left[\\mu mol\\,photons\\,m^{-2}\\,s^{-1}\\right]$')) +
+  scale_color_manual(aesthetics = c("colour", "fill"),
+                     values = c("#1B9E77", "#D95F02", "#7570B3", "#E7298A", "#66A61E"),
+                       name="PAR Horizons",
+                      labels=list(TeX('$\\mathrm{PAR$_{MLD}$'),
+                                   TeX('$\\mathrm{PAR}_{DCM}$'),
+                                   TeX('$\\mathrm{PAR}_{low}$'),
+                                   TeX('$\\mathrm{PAR}_{50,bottom}$'),
+                                   TeX('$\\mathrm{PAR}_{50,top}$')))
+
+absolute_light
+
+# # https://www.datanovia.com/en/blog/top-r-color-palettes-to-know-for-great-data-visualization/
+# library(RColorBrewer)
+# display.brewer.pal(n = 8, name = 'Dark2')
+# brewer.pal(n=8, name='Dark2')
+
+
+#grid.arrange(relative_light + theme(legend.position="none"), absolute_light, nrow = 2)
+#grid.arrange(relative_light, absolute_light, nrow = 2)
+```
+
+
+
+```{r FigR5, fig.width=10, fig.height=10}
+gA <- ggplotGrob(depthplot+
+  geom_text(data=data.frame(x=1, y=0, label='a)'), aes(x=x, y=y, label=label), color='black', fill='black', size=5))
+gB <- ggplotGrob(densplot+
+  geom_text(data=data.frame(x=1, y=10, label='b)'), aes(x=x, y=y, label=label), color='black', fill='black', size=5))
+gC <- ggplotGrob(absolute_light+
+  geom_text(data=data.frame(x=1, y=300, label='c)'), aes(x=x, y=y, label=label), color='black', fill='black', size=5))
+grid::grid.newpage()
+grid::grid.draw(rbind(gA, gB, gC))
+```
+
+
+
+## Vertical distribution of the CHL content
+
+```{r Fig9}
+require(reshape2)
+tmp_part <- melt(subset(tmp_fitco, select = c('month','year','RaMLD_chla','DCMratio')), id.vars=c('month','year'))
+#,'visible_ratio'
+
+partplot <- ggplot(tmp_part, aes(x=month)) +
+    geom_smooth(aes(y=value, fill=variable, color=variable),stat = 'summary',
+#              fun.data = median_hilow,
+              fun.data = mean_cl_boot,
+              fun.args = list(conf.int = 0.95), alpha=0.5)+
+        scale_x_continuous(NULL, labels = month.abb, breaks = seq(1,12), expand = c(1,1)*0.01) +
+    theme_bw()+
+  theme(panel.grid.minor.x = element_line(colour = "grey"),
+        panel.grid.major.x = element_line(colour = "white")) +
+        scale_y_continuous(breaks = seq(0,100,10), minor_breaks = NULL) +
+    geom_boxplot(aes(y=value, fill=variable, color=variable, group=interaction(month,variable)), alpha=0.2)+
+  ylab('[%]')+
+  scale_color_brewer(name='Part of tot. Chl:',
+                     labels=c('above MLD','within 5m of DCM','above optical depth'),
+                     aesthetics = c("colour", "fill"),type = qual ,palette=MyPal)#+ylim(c(0,100))
+
+partplot
+
+```
+
+## Concentrations
+
+```{r Fig8}
+require(reshape2)
+tmp_conc1<-subset(tmp_fitco, select = c('total_chla','chla_surf','chla_dcm','month','year','dcm_or_not'))
+
+tmp_conc1$chla_dcm[tmp_conc1$dcm_or_not==0]<-NA
+
+tmp_conc1$total_chla<-tmp_conc1$total_chla/40
+
+tmp_conc <- melt(tmp_conc1[,-which(colnames(tmp_conc1)=='dcm_or_not')], id.vars=c('month','year'))
+
+concplot<-  ggplot(tmp_conc, aes(x=month)) +
+      geom_smooth(aes(y=value, fill=variable, color=variable),stat = 'summary',
+  #              fun.data = median_hilow,
+                fun.data = mean_cl_boot,
+                fun.args = list(conf.int = 0.95), alpha=0.5)+
+          scale_x_continuous(NULL, labels = month.abb, breaks = seq(1,12), expand = c(0, 0)) +
+        theme_bw()+
+  theme(panel.grid.minor.x = element_line(colour = "grey"),
+        panel.grid.major.x = element_line(colour = "white")) +
+      geom_boxplot(aes(y=value, fill=variable, color=variable, group=interaction(month,variable)), alpha=0.2)+
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    ylab(TeX('$\\left[mg\\,m^{-3}\\right]$$'))+coord_cartesian(ylim=c(0,2.5))+
+    scale_color_manual(aesthetics = c("colour", "fill"),
+                     values = c("#1B9E77", "#7570B3","#D95F02"),#,  "#E7298A", "#66A61E"),
+                       name="Chla concentration", 
+                       labels=c("Total (scaled)","Surface","DCM"))
+
+concplot
+```
+
+```{r FigR6, fig.width=10, fig.height=6}
+gA <- ggplotGrob(concplot+
+  geom_text(data=data.frame(x=1, y=2.5, label='a)'), aes(x=x, y=y, label=label), color='black', fill='black', size=5))
+gB <- ggplotGrob(partplot+
+  geom_text(data=data.frame(x=1, y=100, label='b)'), aes(x=x, y=y, label=label), color='black', fill='black', size=5))
+
+grid::grid.newpage()
+grid::grid.draw(rbind(gA,gB))
+```
+
+## Navarro's Ratio
+
+```{r sigma_ratio_2, echo=TRUE}
+require(scales)
+
+MLDdf_info2 <- ddply(tmp_fitco, .(year,platform), summarize,
+                maxMLD = max(MLD, na.rm = T),
+                sigmaMaxMLD = max(sigmaMLD, na.rm = T))
+
+sigma_ratio2 <- ddply(tmp_fitco, .(platform, juld), mutate,
+   sigmaMaxMLD = MLDdf_info2$sigmaMaxMLD[which((MLDdf_info2$year == unique(year))
+                                              & (MLDdf_info2$platform == unique(platform)))],
+   ratio = sigmaMAX/sigmaMaxMLD)
+```
+
+
+```{r Fig11, fig.width=10, fig.height=3}
+
+ddd <- subset(sigma_ratio2,(month %in% c(3,4,5,6,7,8,9,10))&(!is.na(ratio)))
+ddd$cutlon <- cut(ddd$lon,breaks = c(27,34.5,42))
+ddd$bibi <- factor(interaction(ddd$month,ddd$cutlon), ordered = TRUE)
+  
+discfigb1<-ggplot(ddd, 
+       aes(x = month, y = ratio, color=cutlon, fill=cutlon))+
+   geom_boxplot(aes(group= bibi),
+                alpha=0.2, notch = TRUE, varwidth = FALSE, position='dodge2')+
+  scale_x_continuous(NULL, labels = month.abb, breaks = seq(1,12), expand = c(1,1)*0.01)+
+          theme_bw()+
+  theme(panel.grid.minor.x = element_line(colour = "grey"),
+        panel.grid.major.x = element_line(colour = "white")) +
+  scale_color_brewer(aesthetics = c("colour", "fill"),
+                     type = qual ,palette=MyPal, name="Longitude", labels=c('West','East')) +
+  ylab(TeX('$\\sigma_{DCM}/\\sigma_{MLD,max}$'))
+
+discfigb1
+
+```
+
+
+
+## and what about light at DCM ? 
+
+```{r paratdcm, error=FALSE, warning=FALSE, echo=FALSE, message=FALSE, results='hide', include=FALSE, eval=TRUE}
+# Attempt to derive PARfraction at the DCM depth
+
+loc <- merge(initPAR, subset(tmp_fitc,select = c("platform","juld","Zmax","Z90T")),by=c("platform","juld"))
+
+PARpartDCM <- function(depth, PAR , Zmax){
+  require(pracma)
+  #require(nls2)
+  if (FilterForPAR(depth,PAR)){
+    out    <- try_default({
+      d <<- depth[which( !is.na(depth) & PAR>0.1  )]
+      P <- PAR[which( !is.na(depth) & PAR>0.1  )]
+      
+      # ? nls2
+      m <<-nls(PAR ~ Att_2band(depth,PAR0,ks0,kl0),
+               data = data.frame(depth=depth, PAR=PAR),
+               start = p2b_start, 
+               lower = p2b_lower,
+               upper = p2b_upper,
+               algorithm = "port", 
+               control = list(maxiter= 1000)
+      )
+      mcoef  <<- coef(m)
+      PAR0   <-  mcoef[1]
+      PARcon <- predict(m,data.frame(depth=c(5,Zmax)))  
+      PARpartDCM <- PARcon[2]/PAR0
+      
+      ## Other approach ##
+      #PARconB <- approx(x = depth,y=PAR,xout = Zmax)$y
+      #PARpartDCM <- PARconB/PAR0
+      return(PARpartDCM)},
+      DefOut_isoPAR)
+  }else{
+    out <- DefOut_isoPAR
+  }
+}
+
+integrated_diags_par2 <- ddply(loc, .(juld,platform), summarize,
+                          PARpartDCM = PARpartDCM(depth = depth , PAR = par, Zmax=unique(Zmax))                          )
+
+```
+
+```{r PARatDCM2}
+#tmp_fitc<-tmp_fitc[,-which(colnames(tmp_fitc)=="PARpartDCM")]
+tmp_fitcl<-merge(tmp_fitc ,integrated_diags_par2, by = c('juld','platform'), all.x = TRUE)
+
+discfig2<-ggplot(tmp_fitcl, aes(x=month, y=PARpartDCM*100)) +
+    geom_smooth(stat = 'summary',
+#              fun.data = median_hilow,
+             fun.data = mean_cl_boot,
+              fun.args = list(conf.int = 0.95),
+              alpha=0.5,
+              color=brewer_pal(palette = MyPal)(2)[2],
+              fill=brewer_pal(palette = MyPal)(2)[2])+
+  geom_boxplot(aes(group=month), alpha=0.2, notch = TRUE, color=brewer_pal(palette = MyPal)(2)[2],fill=brewer_pal(palette = MyPal)(2)[2])+
+  theme_bw()+scale_x_continuous(NULL, labels = month.abb, breaks = seq(1,12))+
+  scale_y_continuous(breaks = seq(0,5,1), minor_breaks = NULL, limit=c(0,5)) +
+  ylab('[% of surface PAR at DCM]')
+#print(discfig2)
+
+```
+
+```{r PARatDCM2BIS, error=FALSE}
+#tmp_fitc<-tmp_fitc[,-which(colnames(tmp_fitc)=="PARpartDCM")]
+tmp_fitcl<-merge(tmp_fitc ,integrated_diags_par2, by = c('juld','platform'), all.x = TRUE)
+
+tmp_fitcl$cutlon <- cut(tmp_fitcl$lon,breaks = c(27,34.5,42))
+tmp_fitcl$bibi         <- factor(interaction(tmp_fitcl$month,tmp_fitcl$cutlon), ordered = TRUE)
+
+# discfigb2<-ggplot(tmp_fitcl, aes(x=cutlon, y=PARpartDCM*100, color=factor(month), fill=factor(month))) +
+#   geom_boxplot(aes(group=bibi), alpha=0.2, notch = TRUE)+
+#   theme_bw()+#scale_x_continuous(NULL, labels = month.abb, breaks = seq(1,12))+
+#   scale_y_continuous(breaks = seq(0,5,1), minor_breaks = NULL, limit=c(0,5)) +
+#   scale_color_brewer(aesthetics = c("colour", "fill"),type = qual ,palette=MyPal, name="Month") +
+#   ylab('[% of surface PAR at DCM]')
+discfigb2<-ggplot(tmp_fitcl, 
+       aes(x = month, y = PARpartDCM*100, color=cutlon, fill=cutlon))+
+  theme_bw()+
+   geom_boxplot(aes(group= bibi),
+                alpha=0.2, notch = TRUE, varwidth = FALSE, position='dodge2')+
+  scale_x_continuous(NULL, labels = month.abb, breaks = seq(1,12))+
+  scale_y_continuous(breaks = seq(0,5,1), minor_breaks = NULL, limit=c(0,5)) +
+  scale_color_brewer(aesthetics = c("colour", "fill"),
+                     type = qual ,palette=MyPal, name="Longitude", labels=c('West','East')) +
+  ylab('[% of surface PAR at DCM]')
+
+print(discfigb2)
+```
+
+# Potential Additional sections. 
+
+## Spatial
+
+```{r Fig4,fig.width=8,fig.height=5}
+
+require(ggmap)
+#mm <- get_map
+
+mycoord <- c(27,40.5,42,47)
+myMap_stamen <- get_map(location=mycoord,source="stamen",maptype = "watercolor", force = TRUE)
+
+tmp_fitco$monthn<-factor(tmp_fitco$month, labels = month.abb[unique(tmp_fitco$month)])
+
+ms<-ggmap(myMap_stamen)
+ms1<-ms+geom_point(data=tmp_fitco, aes(x=lon,y=lat, color=factor(dcm_or_not)), alpha=.6)+
+  facet_wrap(~monthn, scale="fixed")+
+  theme_bw()+
+  #scale_color_discrete(name="", labels=c('non-DCM','DCM'))+
+  scale_color_manual(values = c("black", "red"), labels=c('non-DCM','DCM'), name="")+
+  theme(legend.position = 'top', legend.box = "horizontal")+
+  scale_x_continuous(name='', breaks = c(27,30,33,36,39), limits = c(27,42), expand = expand_scale(add = 0))+
+  scale_y_continuous(name='', breaks = seq(41,47), limits = c(40.7,47), expand = expand_scale(add = 0)) +
+  # for another wrap colour (B/W instead of grey)
+  theme(panel.background=element_rect(fill='white', colour='black'),strip.background=element_rect(fill='white', colour='black'))
+
+ms1
+```
+
+## Inter-annual variability. 
+
+Here we repeat all plots made above, but with single lines marking interannual variability.
+
+```{r, include=FALSE}
+require(reshape2)
+
+tmp_zmaxC<- dcast(tmp_zmax,formula = month~variable, fun.aggregate = mean, na.rm=TRUE)
+tmp_zmaxA<-melt(tmp_zmaxC, id.vars=c('month'))
+
+#levels(tmp_zmax$variable)<-levels(tmp_zmax$variable)[-which()]
+#levels(tmp_zmaxA$variable)<-levels(tmp_zmax$variable)[-7]
+
+P_years_depth <- ggplot(subset(tmp_zmax, variable !="Zdemi"), aes(x=month, fill=variable, color=variable)) +
+    geom_line(data=subset(tmp_zmaxA, variable !="Zdemi"),aes(y=value),alpha =1, size=0.5, linetype=2)+
+      geom_smooth(aes(y=value, group=variable),
+                  stat = 'summary',
+                  fun.data = mean_cl_boot,
+                  fun.args = list(conf.int = 0.95), 
+                  alpha=0.2, linetype=0)+
+  scale_x_continuous(name='', breaks=c(), labels="", limits=c(.5,12.5), expand = c(0,0))+
+  ylab('[m]')+theme_bw()+
+  coord_cartesian(ylim=c(90,0), expand = FALSE)+scale_y_reverse()+
+  scale_color_brewer(aesthetics = c("colour", "fill"),
+                       type = qual ,
+                       palette=MyPal,
+                       name="Depth Horizons : ", 
+                       labels=list(TeX('$z_{MLD}$'),
+                                TeX('$z_{DCM}$'),
+                                TeX('$z_{low}$'),
+                                TeX('$z_{50,bottom}$'),
+                                TeX('$z_{50,top}$'),
+                                TeX('$z_{\\mathrm{PAR}\\,1%}$')))+
+#  scale_color_brewer(aesthetics = c("colour", "fill"),type = qual ,palette=MyPal, name='')+
+  facet_grid(.~year)+
+  theme(legend.position = 'top', legend.box = "horizontal",panel.spacing = unit(0, "lines"))+
+  guides(colour = guide_legend(nrow = 1))
+
+P_years_depth
+```
+
+```{r, include=FALSE}
+
+tmp_sigC<- dcast(tmp_sig,formula = month~variable, fun.aggregate = mean, na.rm=TRUE)
+tmp_sigA<-melt(tmp_sigC, id.vars=c('month'))
+
+
+P_years_sig <-ggplot(tmp_sig, aes(x=month, fill=variable, color=variable)) +
+       geom_line(data=tmp_sigA,aes(y=value),alpha =1, size=0.5, linetype=2)+
+      geom_smooth(aes(y=value, group=interaction(year, variable)),stat = 'summary',
+             fun.data = mean_cl_boot,
+              fun.args = list(conf.int = 0.95), 
+                  alpha=0.2, linetype=0)+
+  scale_x_continuous(name='', breaks=c(), labels="", limits=c(.5,12.5))+
+  ylab(TeX('$\\left[kg\\,m^{-3}\\right]$$'))+
+  coord_cartesian(ylim=c(16,10), expand = FALSE)+
+  theme_bw()+
+  #scale_color_brewer(aesthetics = c("colour", "fill"),type = qual ,palette=MyPal)+
+  scale_color_brewer(aesthetics = c("colour", "fill"),type = qual ,palette=MyPal,
+                       name="Density Horizons : ", 
+                       labels=list(TeX('$\\sigma_{MLD}$'),
+                                TeX('$\\sigma_{DCM}$'),
+                                TeX('$\\sigma_{low}$'),
+                                TeX('$\\sigma_{50,bottom}$'),
+                                TeX('$\\sigma_{50,top}$'),
+                                TeX('$\\sigma_{\\mathrm{PAR}\\,1%}$')))+
+  facet_grid(.~year)+
+  theme(legend.position = 'top', legend.box = "horizontal",panel.spacing = unit(0, "lines"))+
+          guides(colour = guide_legend(nrow = 1))
+
+P_years_sig 
+
+```
+
+```{r inter_light, include=FALSE}
+#absolute light
+tmp_isoC<- dcast(tmp_iso,formula = month~variable, fun.aggregate = median, na.rm=TRUE)
+tmp_isoA<-melt(tmp_isoC, id.vars=c('month'))
+
+P_years_iso <-ggplot(tmp_iso, aes(x=month, fill=variable, color=variable)) +
+       geom_line(data=tmp_isoA,aes(y=value),alpha =1, size=0.5, linetype=2)+
+      geom_smooth(aes(y=value, group=interaction(year, variable)),stat = 'summary',
+             fun.data = mean_cl_boot,
+              fun.args = list(conf.int = 0.95), 
+                  alpha=0.2, linetype=0)+
+  scale_x_continuous(name='', breaks=c(), labels="", limits=c(.5,12.5))+
+  ylab(TeX('$\\left[\\mu mol\\,photons\\,m^{-2}\\,s^{-1}\\right]$'))+theme_bw()+
+    scale_y_continuous(trans = 'log10') +
+  #scale_color_brewer(aesthetics = c("colour", "fill"),type = qual ,palette=MyPal)+
+  scale_color_brewer(aesthetics = c("colour", "fill"),type = qual ,palette=MyPal,
+                       name="PAR Horizons : ", 
+                       labels=list(TeX('$\\mathrm{PAR$_{MLD}$'),
+                                   TeX('$\\mathrm{PAR}_{DCM}$'),
+                                   TeX('$\\mathrm{PAR}_{low}$'),
+                                   TeX('$\\mathrm{PAR}_{50,bottom}$'),
+                                   TeX('$\\mathrm{PAR}_{50,top}$')))+
+  facet_grid(.~year)+
+  theme(legend.position = 'top', legend.box = "horizontal",panel.spacing = unit(0, "lines"))+
+          guides(colour = guide_legend(nrow = 1))
+P_years_iso 
+
+```
+
+
+```{r inter_parts, include=FALSE}
+
+tmp_partC<- dcast(tmp_part,formula = month~variable, fun.aggregate = mean, na.rm=TRUE)
+tmp_partA<-melt(tmp_partC, id.vars=c('month'))
+
+
+P_years_part <-ggplot(tmp_part, aes(x=month, fill=variable, color=variable)) +
+       geom_line(data=tmp_partA,aes(y=value),alpha =1, size=0.5, linetype=2)+
+      geom_smooth(aes(y=value, group=interaction(year, variable)),stat = 'summary',
+             fun.data = mean_cl_boot,
+              fun.args =  list(conf.int = 0.95), 
+                  alpha=0.2, linetype=0)+
+  scale_x_continuous(name='', breaks=c(), labels="", limits=c(.5,12.5), expand = c(0,0))+
+  ylab('[%]')+theme_bw()+coord_cartesian(ylim=c(0,100), expand = FALSE)+
+  scale_color_brewer(name='Part of tot. Chl : ',
+                     labels=c('above MLD','within 5m of DCM','above optical depth'),
+                     aesthetics = c("colour", "fill"),type = qual ,palette=MyPal)+
+  facet_grid(.~year)+theme(legend.position = 'top', legend.box = "horizontal",panel.spacing = unit(0, "lines"))+ guides(colour = guide_legend(nrow = 1))
+
+P_years_part
+
+
+```
+
+
+```{r inter_conc, include=FALSE}
+
+tmp_concC<- dcast(tmp_conc,formula = month~variable, fun.aggregate = mean, na.rm=TRUE)
+tmp_concA<-melt(tmp_concC, id.vars=c('month'))
+
+
+P_years_conc <-ggplot(tmp_conc, aes(x=month, fill=variable, color=variable)) +
+       geom_line(data=tmp_concA,aes(y=value),alpha =1, size=0.5, linetype=2)+
+      geom_smooth(aes(y=value, group=interaction(year, variable)),stat = 'summary',
+             fun.data = mean_cl_boot,
+              fun.args = list(conf.int = 0.95), 
+                  alpha=0.3, linetype=0)+
+  scale_x_continuous(name='', breaks=c(), labels="", limits=c(.5,12.5), expand = c(0,0))+
+  ylab('[mg/m3]')+theme_bw()+coord_cartesian(ylim=c(0,3), expand = FALSE)+
+  scale_color_brewer(aesthetics = c("colour", "fill"),type = qual ,palette=MyPal)+
+  facet_grid(.~year)+scale_color_brewer(aesthetics = c("colour", "fill"),type = qual,
+                       palette=MyPal, 
+                       name="Chla concentrations : ",
+                       labels=c("Total (scaled)","Surface","DCM"))+
+  facet_grid(.~year)+theme(legend.position = 'top', legend.box = "horizontal",panel.spacing = unit(0, "lines"))+ guides(colour = guide_legend(nrow = 1))
+
+P_years_conc
+
+```
+
+```{r Fig12, fig.height=12, fig.width=10}
+grid.arrange(P_years_depth,
+             P_years_sig+theme( strip.background = element_blank(),strip.text.x = element_blank()), 
+             P_years_iso+theme( strip.background = element_blank(),strip.text.x = element_blank()), 
+             P_years_part+theme( strip.background = element_blank(),strip.text.x = element_blank()),
+             P_years_conc+theme( strip.background = element_blank(),strip.text.x = element_blank()),
+             ncol=1)
+
+```
+
